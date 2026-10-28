@@ -1,0 +1,20 @@
+# Normalize text files to LF, whatever operating system they were edited on.
+* text=auto eol=lf
+
+# Batch and PowerShell scripts keep CRLF
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Binary files: never touch line endings, no text diff
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.webp binary
+*.pdf  binary
+*.wav  binary
+*.mp3  binary
+*.ogg  binary
+*.opus binary
+*.zip  binary
