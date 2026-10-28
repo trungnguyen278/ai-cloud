@@ -31,7 +31,7 @@
    - **The end of speech:** the model's own voice-activity detection decides it. The agent then sends `turn.speech_end` to the device, as the cloud link says.
    - **Tools:** the device's capabilities and the cloud's skills are declared as the model's functions.
    - **Sessions:** context window compression is on, and the agent resumes a session across connections, so a conversation is not cut at 10 or 15 minutes.
-2. **The second engine is cascaded**, used when the realtime engine fails, runs out of quota, or lacks a language. Each stage is a chain of official free tiers:
+2. **The second engine is cascaded**, used when the realtime engine fails, runs out of quota, or lacks a language. Each stage is a chain of official free tiers, one key of the owner's per provider. [providers.md](../providers.md) lists every free tier found, and their order:
    - recognition: Gemini, then Groq's Whisper large v3, then Azure;
    - the language model: Gemini Flash, then Flash-Lite, then a model on Groq's free tier;
    - speech: Gemini's Flash TTS, then Azure's Vietnamese neural voices;
