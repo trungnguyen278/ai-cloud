@@ -2,6 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-10-28
+- **Revised:** 2026-10-28, after a review for growth: the data's rules, skills as MCP servers, devices' links as ports, and how each part grows.
 
 ## Context
 
@@ -27,6 +28,8 @@
    - The modules are `accounts`, `devices`, `conversation`, `memory`, `skills`, `updates`, `operations` and `notifications`, with `shared` beneath them ([architecture](../architecture.md#modules)).
    - Each module owns its tables, in its own Postgres schema, and offers a public API (`api.py`). Nothing imports another module's internals; import-linter checks it in CI.
 2. **Ports and adapters inside each module**, as on the robot. Every outside service is a port; configuration chooses its adapter; simulated adapters serve tests and running without accounts.
+   - A device's links are ports too: the LiveKit room today, and links of other kinds for devices that hold no room.
+   - Skills are MCP servers, in the process or apart, so that every tool the agent offers a model is MCP: a device's and the cloud's alike.
 3. **Three process roles, from the same package:**
    - `api`, for requests;
    - `agent`, the LiveKit Agents worker, for conversations;
@@ -35,6 +38,8 @@
    Each grows by running more copies.
 4. **Modules talk through their public APIs within a process, and through domain events across processes.** A module writes an event in the same transaction as its change (a transactional outbox), and `worker` delivers it through a queue.
 5. **Data:** PostgreSQL is the source of truth, with pgvector for embeddings. Redis holds only what can be lost: caches, rate limits, presence, the queue. Object storage holds backups and exports.
+   - Each module's data is its own: others refer to it by identifier, never by a foreign key or a join, so that a module can move to a database of its own.
+   - Everything that grows with use carries its home ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)), and high-volume tables are partitioned by time.
 6. **Cost is part of the architecture.**
    - Every paid stage is a chain of providers, official free tiers first, with fallback.
    - Every call is metered, against daily quotas per device and per owner.
@@ -67,6 +72,7 @@
   - ADR-0003, the conversation pipeline: providers, Vietnamese end of speech, the budget's numbers;
   - ADR-0004, hosting and LiveKit's media;
   - ADR-0005, owners' sign-in;
+  - ADR-0006, personal data and the law;
   - the app's API, defined in ai-platform.
 
 ## References
