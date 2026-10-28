@@ -2,7 +2,7 @@
 
 > **Status:** proposed in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Nothing is built yet.
 
-The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money.
+The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
 ## Principles
 
@@ -40,11 +40,11 @@ The same package runs as three processes, each started by its own entry point:
 
 | Module | Owns |
 |---|---|
-| `accounts` | Owners, their sign-in, households, sharing a device with others |
-| `devices` | The registry: each device's key, kind, model and software, its binding to an owner, set-up's registrations, its tokens, its health |
+| `accounts` | Homes and their members: people with roles, and profiles for those who never sign in; sign-in; invitations ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)) |
+| `devices` | The registry: each device's key, kind, model and software, its home, set-up's registrations, its tokens, its health. Its links to devices are ports: the LiveKit room today, other links for devices that hold no room |
 | `conversation` | Sessions, the speech pipeline, turns, the persona for each kind of device and language, the tools of a turn, barge-in, fillers, confirmations |
 | `memory` | What a session remembers, summaries across sessions, long-term facts with their embeddings; retention and deletion |
-| `skills` | The cloud's own tools: time and the lunar calendar, weather, timers and reminders, knowledge, and more as they come, each behind its port |
+| `skills` | The cloud's own tools: time and the lunar calendar, weather, timers and reminders, knowledge, and more as they come. Each is an MCP server, run in the process or apart |
 | `updates` | Release channels, rollouts in stages, announcements to devices, each device's update state |
 | `operations` | Health and metrics from devices, usage and cost metering, quotas, administration |
 | `notifications` | Push to the app, and email |
@@ -66,7 +66,8 @@ Each module has the same shape:
 
 - **Within a process**, through each other's `api.py`.
 - **Across processes, and for what follows a change**, through domain events. A module writes its event in the same transaction as the change (a transactional outbox), and `worker` delivers it through a queue. When `devices` records a binding, for example, `notifications` tells the app and `updates` starts checking the device's version.
-- **In a session**, the agent gives the model one list of tools: the device's MCP tools, over the data channel, and the cloud's skills.
+- **In a session**, the agent gives the model one list of tools, all of them MCP: the device's, over the data channel, and the skills', in the process or over the network. A third party's skill would be one more MCP server.
+- **Events** carry a version, and arrive at least once, so every consumer is idempotent.
 
 ## The conversation pipeline
 
@@ -99,6 +100,8 @@ The shape is decided here; the providers are chosen in ADR-0003.
 ## Data
 
 - **PostgreSQL** is the source of truth: one schema per module, migrations per module, and pgvector for the embeddings of `memory`.
+- **Each module's data is its own.** Other modules refer to it by identifier only: no foreign keys or joins across schemas, and reads go through the owner's `api.py`. A module's tables can then move to a database of their own.
+- **Everything that grows with use carries `home_id`** ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)), so that the data can be partitioned or sharded by home. High-volume tables (usage, health reports, turns) are partitioned by time, and their old partitions dropped as their retention says.
 - **Redis** holds only what can be lost: caches, rate limits, presence, the event queue (Redis Streams). Losing it loses nothing that matters.
 - **Object storage**, S3-compatible, holds backups and exports. Audio is not kept unless an owner asks.
 - **Retention:** each table says how long it keeps its rows, and an owner's data can be deleted (PRIV-4).
@@ -119,12 +122,15 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 - **Owners** sign in as their own ADR decides. Every request is confined to the account and its devices (SEC-6).
 - **Secrets** come from the environment or a secret store, and are never logged.
 - **Limits** on rates and sizes at the edge (SEC-15) also bound what an abuser can cost.
+- **Keys rotate.** The keys that sign rooms' tokens, and those that verify sessions, are replaced on a schedule, and the old ones honoured until their tokens expire.
+- **The law.** Personal data follows the law where the owners live, Vietnam's first. ADR-0006 settles it before the first real users. The products are for adults, not directed to children (PRIV-7).
 
 ## Observability
 
 - Structured logs, without content.
 - Metrics for each turn's latency (from the end of speech to the first sound), and for each provider's errors and cost.
 - Traces across `api`, `agent` and `worker`, with OpenTelemetry.
+- Objectives, set before launch: the share of turns answered within a target latency, and the cloud's availability.
 
 ## Deployment
 
@@ -133,6 +139,41 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
   - The same images run later on a rented server or on Kubernetes.
 - LiveKit's media needs UDP, or a TURN relay. ADR-0004 decides how the host offers it, and whether LiveKit is self-hosted or LiveKit Cloud.
 - **Environments:** development, with simulated providers and no accounts; production.
+
+## Phases
+
+The architecture is for many owners; the cloud is built for one first, its maker, with one home and one robot. It opens to others once its functions are complete. Each phase builds part of the same design, and nothing that a later phase replaces:
+
+- **From the start:** whatever is costly to add later. That means the data's model (homes, people and roles), identity (accounts and devices' keys), the protocols and their versions, ports and adapters, and privacy by design.
+- **When others join:** what only many owners need.
+
+| | Phase one: the maker alone | When others join |
+|---|---|---|
+| Homes and people | One home and its owner. Members and roles are in the data from the start. | Invitations, roles in the app, several homes |
+| Sign-in | The owner's account, through the same sign-in others will use (ADR-0005) | More accounts |
+| Budget | One daily budget for the whole cloud, a guard against runaway costs | Quotas per home and per device |
+| Hosting | One host (ADR-0004) | The [growth](#growth) table |
+| Data and the law | The owner's own data | ADR-0006 settled and applied before the first other owner: consent, retention, deletion, export |
+| The cloud's releases | Deployed when the owner is ready | Feature flags and releases in stages |
+| Operations | Logs and metrics | Alerts, an administration console, support |
+
+## Growth
+
+How each part grows, should the project grow a lot. None of it changes a module's code: each step is a new adapter, a deployment, or a split along a boundary that already exists.
+
+| Part | To start | When it grows |
+|---|---|---|
+| `api` | One replica | More replicas, behind the proxy |
+| `agent` | One worker | More workers, among which LiveKit spreads the jobs |
+| LiveKit | One server | A cluster, then servers in several regions. The token endpoint already names the server a device joins, so it can choose by region. |
+| PostgreSQL | One database, a schema per module | A connection pooler and read replicas; a module's schema moved to a database of its own; then tables sharded by home |
+| Events | Redis Streams | NATS or Kafka, behind the same port |
+| Memory's search | pgvector | A vector store of its own, behind `memory`'s port |
+| AI providers | Official free tiers, metered | Paid tiers chosen by measured unit cost; models of our own, once volume pays for them; a home's own API keys, if its owner brings them |
+| Skills | In the process | MCP servers apart, then third parties' |
+| Devices | One kind, in a LiveKit room | More kinds, each declaring its capabilities; links of other kinds for devices that hold no room |
+| The cloud's releases | One image | Feature flags by home or device, so that a change rolls out in stages |
+| The team | One person | Each module with its owners (CODEOWNERS), its tests and its migrations; a module that must scale apart becomes a service along its boundary |
 
 ## Repository layout
 
@@ -173,3 +214,4 @@ Luni Cloud was the preview. What it taught, and what changes:
 | ADR-0003 | The conversation pipeline: providers, Vietnamese end of speech, the budget's numbers |
 | ADR-0004 | Hosting, and LiveKit's media |
 | ADR-0005 | Owners' sign-in |
+| ADR-0006 | Personal data and the law |
