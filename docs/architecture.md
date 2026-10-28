@@ -211,7 +211,7 @@ Luni Cloud was the preview. What it taught, and what changes:
 |---|---|
 | [0001](decisions/0001-architecture.md) | This architecture |
 | [0002](decisions/0002-stack.md) | The stack: Python, LiveKit Agents, FastAPI |
-| ADR-0003 | The conversation pipeline: providers, Vietnamese end of speech, the budget's numbers |
+| [0003](decisions/0003-conversation-pipeline.md) | The conversation pipeline: Gemini Live first, a chain of free tiers behind it |
 | ADR-0004 | Hosting, and LiveKit's media |
 | ADR-0005 | Owners' sign-in |
 | ADR-0006 | Personal data and the law |
