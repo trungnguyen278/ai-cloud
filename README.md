@@ -1,6 +1,6 @@
 # ai-cloud
 
-> **Status:** new. The repository's conventions are in place; there is no code yet. The [architecture](docs/architecture.md), the stack, the conversation pipeline and hosting are proposed; owners' sign-in and personal data come next ([dev log](docs/devlog/2026-10.md)).
+> **Status:** new. The repository's conventions are in place; there is no code yet. The [architecture](docs/architecture.md), the stack, the conversation pipeline and hosting are accepted; owners' sign-in and personal data come next ([dev log](docs/devlog/2026-10.md)).
 
 The cloud side of the project's AI devices, the first of which is [ai-robot](https://github.com/trungnguyen278/ai-robot), a mobile robot with an expressive face that people talk to. A device handles its own body, screen and senses; the cloud is its AI, and runs what every device needs from it.
 

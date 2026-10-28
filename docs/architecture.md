@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** proposed in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Nothing is built yet.
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Nothing is built yet.
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 

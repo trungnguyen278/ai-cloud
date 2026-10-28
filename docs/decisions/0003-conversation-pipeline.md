@@ -1,8 +1,8 @@
 # 0003 — The conversation pipeline: Gemini Live first, a chain of free tiers behind it
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-28
-- **Revised:** 2026-10-28: the free tier's limits, and no rotating keys or projects to pass them.
+- **Revised:** 2026-10-28: the free tier's limits, and no rotating keys or projects to pass them; then the owner's choice on privacy, with the terms it accepts.
 
 ## Context
 
@@ -19,7 +19,7 @@
 | LiveKit Agents | Gemini Live as a realtime model (`livekit.plugins.google`, with our own key). Its turn detection, from voice activity, is on by default. Tool calls are synchronous: the model waits for each result. |
 | Gemini API's limits | Applied per project, not per API key, and shown for each project in AI Studio. For the Live API's free tier, third parties report 3 concurrent sessions and 1,000,000 tokens a minute; Google publishes no daily figures. |
 | Google APIs' terms | "You agree to, and will not attempt to circumvent, such limitations documented with each API" (§2(d)). Beyond them, Google's express consent is needed. Credentials are "intended to be used by you and identify your API Client", kept confidential, and never embedded in open source projects (§4(b)(1)). |
-| Gemini API's terms | On unpaid quota, Google may use prompts and responses to improve its products, and people may review them. Paid use is excluded, and so are users in the EEA, Switzerland and the UK. |
+| Gemini API's terms | On unpaid quota, Google may use prompts and responses to improve its products, and people may review them. Paid use is excluded, and so are users in the EEA, Switzerland and the UK. The terms ask: "Do not submit sensitive, confidential, or personal information to the Unpaid Services." Users must be 18 or older, and an API client must not be "directed towards or is likely to be accessed by individuals under the age of 18". |
 | Groq, free tier | Whisper large v3 recognizes Vietnamese, within about 8 hours of audio a day (third-party figures, to confirm on Groq's page). |
 | Azure AI Speech, free tier (F0) | 5 hours of speech recognition a month, and a monthly allowance of neural speech, with Vietnamese voices (HoaiMy, NamMinh). |
 
@@ -47,7 +47,7 @@
    - A second project of the owner's with a different purpose is not rotation. One may be paid, under a budget, to take what the free one cannot; one may be for development, to keep tests off the robot's quota. A second free project for the same use is rotation.
    - Beyond the free tier come the cascaded chain's other providers, each within its own free tier, then cheaper routes (rules and Flash-Lite before the Live model), then paid use under the daily budget.
 6. **Privacy:** free tiers give the conversations to Google for improving its products.
-   - In phase one the owner alone talks to the device, and makes that choice knowingly.
+   - In phase one the owner alone talks to the device. The owner chose the free tier for the whole phase (2026-10-28), knowing that people at Google may read the conversations, and that Google's terms ask for nothing personal on unpaid quota.
    - Before any other owner joins (ADR-0006), conversations move to terms that keep them out of training, such as paid tiers or each home's own API keys, or each owner consents.
 
 ## Alternatives considered
@@ -76,7 +76,7 @@
   - measure the free tier's limits on the owner's project, above all the daily ones, and the Vietnamese turn's latency, end to end on the robot;
   - listen to Gemini's voices against Azure's HoaiMy and NamMinh in Vietnamese, and choose the robot's voice;
   - ADR-0004, hosting and LiveKit's media;
-  - ADR-0006, before any other owner: the conversations' terms.
+  - ADR-0006, before any other owner: the conversations' terms, and the Gemini API's age terms, since a device in a home with children is likely to be reached by people under 18.
 
 ## References
 
