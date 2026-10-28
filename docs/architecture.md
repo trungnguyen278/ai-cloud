@@ -26,7 +26,11 @@ The cloud is the AI of every device in the project, and runs what a fleet of dev
                  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Devices keep a control channel to `api` at all times, a WebSocket, and join their LiveKit room only to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)). In phase one LiveKit is LiveKit Cloud ([ADR-0004](decisions/0004-hosting.md)).
+Devices keep a control channel to `api` at all times, a WebSocket, and join a LiveKit room only to talk, one for each conversation (the cloud link 3.0, [ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)):
+- every call to a device goes through `devices`, on its control channel, whoever makes it: the agent, a reminder, the app;
+- a conversation's turns and answers go between the agent and the device, in the room, with the audio.
+
+In phase one LiveKit is LiveKit Cloud ([ADR-0004](decisions/0004-hosting.md)).
 
 ## Process roles
 
@@ -35,7 +39,7 @@ The same package runs as three processes, each started by its own entry point:
 | Process | What it runs | Grows by |
 |---|---|---|
 | `api` | FastAPI: devices' control channels and tokens, set-up's registration, the app's API, administration | more replicas: it keeps no state |
-| `agent` | A LiveKit Agents worker: one job per device's session, in the device's room | more workers, among which LiveKit spreads the jobs |
+| `agent` | A LiveKit Agents worker: one job per conversation, in its room | more workers, among which LiveKit spreads the jobs |
 | `worker` | Background work: delivering domain events, schedules (reminders, rollouts, memory upkeep), notifications | more workers on the queue |
 
 ## Modules
@@ -43,9 +47,9 @@ The same package runs as three processes, each started by its own entry point:
 | Module | Owns |
 |---|---|
 | `accounts` | Homes and their members: people with roles, and profiles for those who never sign in; sign-in; invitations ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)) |
-| `devices` | The registry: each device's key, kind, model and software, its home, set-up's registrations, its tokens, its health. Its links to devices are ports: the LiveKit room today, other links for devices that hold no room |
-| `conversation` | Sessions, the speech pipeline, turns, the persona for each kind of device and language, the tools of a turn, barge-in, fillers, confirmations |
-| `memory` | What a session remembers, summaries across sessions, long-term facts with their embeddings; retention and deletion |
+| `devices` | The registry: each device's key, kind, model and software, its home, set-up's registrations, its tokens, its health. Each device's session on its control channel, the one way to call its tools. The control channel is a port: a WebSocket today, other kinds for devices that cannot keep one |
+| `conversation` | Conversations, the speech pipeline, turns, the persona for each kind of device and language, the tools of a turn, barge-in, fillers, confirmations |
+| `memory` | What a conversation remembers, summaries across conversations, long-term facts with their embeddings; retention and deletion |
 | `skills` | The cloud's own tools: time and the lunar calendar, weather, timers and reminders, knowledge, and more as they come. Each is an MCP server, run in the process or apart |
 | `updates` | Release channels, rollouts in stages, announcements to devices, each device's update state |
 | `operations` | Health and metrics from devices, usage and cost metering, quotas, administration |
@@ -68,7 +72,7 @@ Each module has the same shape:
 
 - **Within a process**, through each other's `api.py`.
 - **Across processes, and for what follows a change**, through domain events. A module writes its event in the same transaction as the change (a transactional outbox), and `worker` delivers it through a queue. When `devices` records a binding, for example, `notifications` tells the app and `updates` starts checking the device's version.
-- **In a session**, the agent gives the model one list of tools, all of them MCP: the device's, over the data channel, and the skills', in the process or over the network. A third party's skill would be one more MCP server.
+- **In a conversation**, the agent gives the model one list of tools, all of them MCP: the device's, which `devices` calls on the device's control channel, and the skills', in the process or over the network. A third party's skill would be one more MCP server.
 - **Events** carry a version, and arrive at least once, so every consumer is idempotent.
 
 ## The conversation pipeline
@@ -81,7 +85,7 @@ The shape is decided here; the providers are chosen in ADR-0003.
 
   Configuration chooses the engine per language and per budget, and a session can fall back from one to the other.
 - **A turn:**
-  1. The device streams the user's speech once its wake word opens a turn.
+  1. A wake word opens a conversation, and the device streams what it hears until the conversation ends. The cloud finds the turns in it.
   2. The cloud decides the end of speech (ai-robot ADR-0012). LiveKit's turn detector has no Vietnamese, so ADR-0003 chooses how.
   3. A router answers what it can without a model (the time, a timer, a status), sends chat to a small, fast model, and knowledge to a stronger model or a skill.
   4. Tools run: the device's capabilities and the cloud's skills.
@@ -120,7 +124,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 
 ## Security
 
-- **Devices** prove themselves with keys in their TPMs, which buy short-lived tokens for their own room (ai-robot ADR-0010). The cloud acts within the safety classes they enforce.
+- **Devices** prove themselves with keys in their TPMs, which buy short-lived tokens for their control channel (ai-robot ADR-0010). Each conversation's room has a token of its own. The cloud acts within the safety classes they enforce.
 - **Owners** sign in as their own ADR decides. Every request is confined to the account and its devices (SEC-6).
 - **Secrets** come from the environment or a secret store, and are never logged.
 - **Limits** on rates and sizes at the edge (SEC-15) also bound what an abuser can cost.
@@ -167,13 +171,13 @@ How each part grows, should the project grow a lot. None of it changes a module'
 |---|---|---|
 | `api` | One replica | More replicas, behind the proxy |
 | `agent` | One worker | More workers, among which LiveKit spreads the jobs |
-| LiveKit | One server | A cluster, then servers in several regions. The token endpoint already names the server a device joins, so it can choose by region. |
+| LiveKit | One server | A cluster, then servers in several regions. Each conversation's start already names the server the device joins, so it can choose by region. |
 | PostgreSQL | One database, a schema per module | A connection pooler and read replicas; a module's schema moved to a database of its own; then tables sharded by home |
 | Events | Redis Streams | NATS or Kafka, behind the same port |
 | Memory's search | pgvector | A vector store of its own, behind `memory`'s port |
 | AI providers | Official free tiers, metered | Paid tiers chosen by measured unit cost; models of our own, once volume pays for them; a home's own API keys, if its owner brings them |
 | Skills | In the process | MCP servers apart, then third parties' |
-| Devices | One kind, in a LiveKit room | More kinds, each declaring its capabilities; links of other kinds for devices that hold no room |
+| Devices | One kind, on a WebSocket | More kinds, each declaring its capabilities; control channels of other kinds for devices that cannot keep a WebSocket |
 | The cloud's releases | One image | Feature flags by home or device, so that a change rolls out in stages |
 | The team | One person | Each module with its owners (CODEOWNERS), its tests and its migrations; a module that must scale apart becomes a service along its boundary |
 
@@ -201,7 +205,7 @@ Luni Cloud was the preview. What it taught, and what changes:
 | Luni Cloud | Here |
 |---|---|
 | One AI service behind HTTP endpoints (`/chat`, `/stt`, `/tts`) | A streaming pipeline in a LiveKit Agents worker |
-| The robot on a WebSocket, with a device token and its MAC address | The cloud link: WebRTC, keys in a TPM, short-lived tokens |
+| The robot on a WebSocket, with a device token and its MAC address | The cloud link 3.0: a WebSocket for the session, WebRTC only to talk; keys in a TPM, short-lived tokens |
 | Memory in Redis Stack | PostgreSQL with pgvector; Redis only for what can be lost |
 | Free tiers, including unofficial endpoints, in fallback chains | Chains of official free tiers, metered and bounded |
 | Agent Brain v2: router, fillers, confirmations, barge-in, memory in tiers | Kept, in `conversation`'s domain |

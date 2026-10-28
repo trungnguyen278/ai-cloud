@@ -2,25 +2,26 @@
 
 - **Status:** Proposed
 - **Date:** 2026-10-28
+- **Revised:** 2026-10-28: a device's tools are called on its control channel, as the cloud link 3.0 has it.
 
 ## Context
 
 - [ADR-0001](0001-architecture.md) sets the shape: a modular monolith, in three process roles. This decision chooses what it is built with.
 - The cloud does two kinds of work:
-  - **conversations, in real time.** It joins each device's LiveKit room as the agent (ai-robot [ADR-0009](https://github.com/trungnguyen278/ai-robot/blob/main/docs/decisions/0009-cloud-link-webrtc.md)), hears the user's turns, thinks, and answers with speech. It calls the device's MCP tools over the room's data channel (ai-robot ADR-0008);
-  - **requests, over HTTPS:** a device's tokens, for assertions signed by its key (ai-robot [ADR-0010](https://github.com/trungnguyen278/ai-robot/blob/main/docs/decisions/0010-device-identity.md)); set-up's registration (ai-robot ADR-0015); later the app's API and the announcement of updates (ai-robot ADR-0014).
+  - **conversations, in real time.** It joins each conversation's LiveKit room as the agent (ai-robot [ADR-0009](https://github.com/trungnguyen278/ai-robot/blob/main/docs/decisions/0009-cloud-link-webrtc.md), ai-platform [ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)), hears the user's turns, thinks, and answers with speech. It calls the device's MCP tools on the device's control channel, a WebSocket (ai-robot ADR-0008, the cloud link 3.0);
+  - **requests, over HTTPS:** the devices' control channels; a device's tokens, for assertions signed by its key (ai-robot [ADR-0010](https://github.com/trungnguyen278/ai-robot/blob/main/docs/decisions/0010-device-identity.md)); set-up's registration (ai-robot ADR-0015); later the app's API and the announcement of updates (ai-robot ADR-0014).
 - LiveKit's framework for agents, LiveKit Agents, comes in Python and in Node.js:
   - LiveKit builds Python first. In 2026 the Node.js SDK still trailed it, with features such as its MCP tools pending (LiveKit's forum);
   - `livekit-agents` 1.8.9 runs on Python 3.10 to 3.14 and offers about 80 plugins. They cover speech recognition and synthesis (Deepgram, ElevenLabs, Google, Azure, Soniox, Speechmatics…), language models (OpenAI, Anthropic, Google…), Silero VAD, a turn detector and MCP.
 - The turn detector's multilingual model knows 14 languages, and Vietnamese is not one of them. How the cloud decides that a Vietnamese speaker has finished (ai-robot ADR-0012) is a question for the conversation pipeline (ADR-0003).
-- MCP's Python SDK (`mcp` 2.3.0) has a client that takes any transport, so the cloud can call a device's tools over the data channel, as the cloud link defines.
+- MCP's Python SDK (`mcp` 2.3.0) has a client that takes any transport, so the cloud can call a device's tools over its control channel, as the cloud link defines.
 - The robot's software is Python too (asyncio). Its JOSE code, its JSON Schema checks and its tests are written the way the cloud's would be.
 
 ## Decision
 
 1. **Python**, at the newest version that every dependency supports: 3.14 as of 2026-10. CI tests it.
-2. **Conversations run in a LiveKit Agents worker.** Each device's session is a job in the device's room. The pipeline's parts are plugins, which ADR-0003 chooses.
-3. **A device's tools are called through MCP's Python SDK**, its client over the data channel, as the cloud link defines.
+2. **Conversations run in a LiveKit Agents worker.** Each conversation is a job in its room. The pipeline's parts are plugins, which ADR-0003 chooses.
+3. **A device's tools are called through MCP's Python SDK**, its client over the device's control channel, which the `devices` module holds, as the cloud link defines.
 4. **Requests are served by an ASGI service, with FastAPI**, in the `api` process (ADR-0001).
    - The three process roles are one Python package, and share its code: the protocols' schemas, read from `platform/`; the JOSE code; the access to storage.
    - What crosses to a device or the app is defined in ai-platform. Tests check every response against those schemas; FastAPI's own description of the API follows them, never the other way round.
@@ -49,7 +50,7 @@
 - Follow-up:
   - ADR-0003: the conversation pipeline, for Vietnamese first, mixed with English, and more languages later (ai-platform ADR-0002). It includes the end of speech, without LiveKit's turn detector for Vietnamese;
   - ADR-0004: hosting, and LiveKit's media;
-  - the token endpoint first, so that a robot can join a room of the real cloud.
+  - the token endpoint and the control channel first, so that a robot can reach the real cloud.
 
 ## References
 

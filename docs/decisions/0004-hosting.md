@@ -2,6 +2,7 @@
 
 - **Status:** Proposed
 - **Date:** 2026-10-28
+- **Revised:** 2026-10-28: the cloud link 3.0 names the media's server when each conversation starts.
 
 ## Context
 
@@ -22,13 +23,13 @@
 
 1. **The cloud runs on one machine the owner has**, at home, under Docker Compose: `api`, `agent`, `worker`, PostgreSQL and Redis.
 2. **The outside world reaches it through a Cloudflare Tunnel**, HTTPS and WebSockets only. No port is opened at home.
-3. **Media goes through LiveKit Cloud, on the Build plan.** Devices and the agent connect out to it, so nothing at home needs UDP. The token endpoint names the LiveKit server for each device (the cloud link), so the media's host can change without touching a device.
+3. **Media goes through LiveKit Cloud, on the Build plan.** Devices and the agent connect out to it, so nothing at home needs UDP. The cloud names the LiveKit server when each conversation starts (the cloud link 3.0), so the media's host can change without touching a device.
 4. **The allowance is metered.**
    - A conversation uses two participant-minutes a minute, the device's and the agent's. 5,000 a month is about 2,500 minutes of conversation, some 80 a day.
    - If the plan's 1,000 agent session minutes count our own agent too, which its page does not say, the ceiling is about 33 minutes a day.
    - `operations` counts both, and warns before either runs out.
 5. **When the allowance runs short, media moves** to LiveKit self-hosted on a rented server with a public address. That server is either a small one near Vietnam, or Oracle Cloud's Always Free offer, which costs nothing but may reclaim an idle instance.
-   - The move is a change of configuration, since the token endpoint names the server.
+   - The move is a change of configuration, since the cloud names the server for each conversation.
    - Until then, a spent allowance pauses conversations until the month renews, while the control channel keeps working.
 6. **Growth** follows the [growth table](../architecture.md#growth):
    - LiveKit Cloud's paid plans, or LiveKit self-hosted on rented servers with public addresses;

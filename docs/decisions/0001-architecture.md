@@ -2,14 +2,14 @@
 
 - **Status:** Proposed
 - **Date:** 2026-10-28
-- **Revised:** 2026-10-28, after a review for growth: the data's rules, skills as MCP servers, devices' links as ports, and how each part grows.
+- **Revised:** 2026-10-28, after a review for growth: the data's rules, skills as MCP servers, devices' links as ports, and how each part grows. Then to follow the cloud link 3.0: a room for each conversation, and a control channel for each device.
 
 ## Context
 
 - The cloud serves every device of the project (ai-platform [ADR-0001](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0001-repositories.md)). It must grow to more kinds of devices, more owners and more languages without being rebuilt.
 - One person builds and runs it, on little money. Running local models is not possible, and paid APIs must be used sparingly.
 - Its work differs in kind:
-  - conversations, in real time, one per device in a LiveKit room;
+  - conversations, in real time, each in a LiveKit room of its own;
   - requests over HTTPS, from devices and the app;
   - background work: events, schedules, notifications.
 - Luni Cloud, the preview for the previous robot, was one FastAPI server and one AI service behind HTTP endpoints, with free-tier providers in fallback chains. Its agent ideas hold (a router, fillers, confirmations, barge-in, memory in tiers). It had no boundaries between its parts, and some of its providers were unofficial endpoints, which were blocked at times.
@@ -28,7 +28,7 @@
    - The modules are `accounts`, `devices`, `conversation`, `memory`, `skills`, `updates`, `operations` and `notifications`, with `shared` beneath them ([architecture](../architecture.md#modules)).
    - Each module owns its tables, in its own Postgres schema, and offers a public API (`api.py`). Nothing imports another module's internals; import-linter checks it in CI.
 2. **Ports and adapters inside each module**, as on the robot. Every outside service is a port; configuration chooses its adapter; simulated adapters serve tests and running without accounts.
-   - A device's links are ports too: the LiveKit room today, and links of other kinds for devices that hold no room.
+   - A device's control channel is a port too: a WebSocket today, and channels of other kinds for devices that cannot keep one.
    - Skills are MCP servers, in the process or apart, so that every tool the agent offers a model is MCP: a device's and the cloud's alike.
 3. **Three process roles, from the same package:**
    - `api`, for requests;
