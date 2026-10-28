@@ -89,7 +89,7 @@ The shape is decided here; the providers are chosen in ADR-0003.
 
 ## Budget: AI on little money
 
-- **Chains of providers.** Each stage of the pipeline has an ordered chain of providers, official free tiers first, with health checks and fallback, configured per language.
+- **Chains of providers.** Each stage of the pipeline has an ordered chain of providers, official free tiers first, with health checks and fallback, configured per language. [providers.md](providers.md) lists the free tiers, checked every three months.
 - **Official interfaces only, in a release.** Scraped pages and unofficial endpoints (Luni Cloud used Google's AI Mode through a browser, edge-tts, gTTS and Google's Web Speech) break without notice and breach their terms. They may be adapters for development, never in a release's configuration.
 - **Metering.** Every call records its provider, its units (tokens, seconds of audio, characters) and their estimated cost.
   - Each device and each owner has daily quotas.
