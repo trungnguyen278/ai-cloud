@@ -87,10 +87,11 @@ The shape is decided here; the providers are chosen in ADR-0003.
 - **A turn:**
   1. A wake word opens a conversation, and the device streams what it hears until the conversation ends. The cloud finds the turns in it.
   2. The cloud decides the end of speech (ai-robot ADR-0012). LiveKit's turn detector has no Vietnamese, so ADR-0003 chooses how.
-  3. A router answers what it can without a model (the time, a timer, a status), sends chat to a small, fast model, and knowledge to a stronger model or a skill.
-  4. Tools run: the device's capabilities and the cloud's skills.
-  5. The answer streams as speech, with expressions and moods for the device.
-  6. After the turn, `worker` decides what to remember.
+  3. The cloud judges whether the turn was meant for the device, since people talk around it, and a television too. It uses the Live model's proactive audio where the model has it (Gemini 3.1 Flash Live does not), or a check of what was said. A turn that was not meant for the device is dropped with `turn.cancel`, and a conversation that holds nothing else is ended (ai-robot ADR-0018, proposed).
+  4. A router answers what it can without a model (the time, a timer, a status), sends chat to a small, fast model, and knowledge to a stronger model or a skill.
+  5. Tools run: the device's capabilities and the cloud's skills.
+  6. The answer streams as speech, with expressions and moods for the device.
+  7. After the turn, `worker` decides what to remember.
 - Fillers, confirmations, barge-in and memory in tiers come from Luni Cloud's Agent Brain v2, and live in `conversation`'s domain.
 
 ## Budget: AI on little money
