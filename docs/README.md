@@ -2,6 +2,7 @@
 
 | Document | Contents |
 |---|---|
+| [architecture.md](architecture.md) | Modules, processes, the conversation pipeline, the budget, data, deployment |
 | [decisions/](decisions/README.md) | The cloud's own decision records (ADRs) |
 | [devlog/](devlog/README.md) | Development log |
 
