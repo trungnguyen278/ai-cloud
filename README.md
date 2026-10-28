@@ -1,6 +1,6 @@
 # ai-cloud
 
-> **Status:** new. The repository's conventions are in place; there is no code yet. The [architecture](docs/architecture.md) and the stack are proposed; the conversation pipeline, hosting and owners' sign-in come next ([dev log](docs/devlog/2026-10.md)).
+> **Status:** new. The repository's conventions are in place; there is no code yet. The [architecture](docs/architecture.md), the stack, the conversation pipeline and hosting are proposed; owners' sign-in and personal data come next ([dev log](docs/devlog/2026-10.md)).
 
 The cloud side of the project's AI devices, the first of which is [ai-robot](https://github.com/trungnguyen278/ai-robot), a mobile robot with an expressive face that people talk to. A device handles its own body, screen and senses; the cloud is its AI, and runs what every device needs from it.
 
@@ -8,9 +8,9 @@ The cloud side of the project's AI devices, the first of which is [ai-robot](htt
 
 The device ⇄ cloud link and its requirements are defined in [ai-platform](https://github.com/trungnguyen278/ai-platform) (`platform/protocols/cloud/`), with the decisions behind them.
 
-- **Conversations.** It joins each device's LiveKit room as the agent, hears the user's turns, decides when they have finished, and answers with speech, in the language spoken to it (ai-platform ADR-0002).
+- **Conversations.** It joins each conversation's LiveKit room as the agent, hears the user's turns, decides when they have finished, and answers with speech, in the language spoken to it (ai-platform ADR-0002).
 - **Capabilities.** It drives what each device offers, such as a robot's expressions, scenes and motion, through the MCP tools the device declares, within the safety classes its owner allows (SEC-8, SEC-9).
-- **Identity.** It knows each device's public key, and gives a device that proves itself the tokens for its room.
+- **Identity.** It knows each device's public key. A device that proves itself gets a token for its control channel, and a room for each conversation.
 - **Set-up and ownership.** It accepts the registration that the owner's app relays during set-up, and binds the device to the owner's account.
 - **Updates.** It announces releases to devices, and can hold one back or roll it out in stages.
 - **Operations.** It sees each device's health and update state, without audio, images or conversations (OPS-1, PRIV-5).
