@@ -6,7 +6,7 @@ The cloud side of the project's AI devices, the first of which is [ai-robot](htt
 
 ## What it does
 
-The device ⇄ cloud link and its requirements are defined in [ai-platform](https://github.com/trungnguyen278/ai-platform) (`protocols/cloud/`), with the decisions behind them.
+The device ⇄ cloud link and its requirements are defined in [ai-platform](https://github.com/trungnguyen278/ai-platform) (`platform/protocols/cloud/`), with the decisions behind them.
 
 - **Conversations.** It joins each device's LiveKit room as the agent, hears the user's turns, decides when they have finished, and answers with speech, in the language spoken to it (ai-platform ADR-0002).
 - **Capabilities.** It drives what each device offers, such as a robot's expressions, scenes and motion, through the MCP tools the device declares, within the safety classes its owner allows (SEC-8, SEC-9).
@@ -20,10 +20,11 @@ The device ⇄ cloud link and its requirements are defined in [ai-platform](http
 ```
 ai-cloud/
 ├── docs/        Decision records (ADRs) and the dev log
+├── platform/    ai-platform, pinned: the protocols, and the decisions that span the repositories
 └── .claude/     Task checklists for AI assistants (see AGENTS.md)
 ```
 
-`platform/` comes with the pin of ai-platform, and the code's layout with the decision on the stack.
+The code's layout comes with the decision on the stack. Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain clone.
 
 ## Documentation
 
