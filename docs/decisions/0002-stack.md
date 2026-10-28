@@ -1,6 +1,6 @@
 # 0002 — The stack: Python, with LiveKit Agents
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-28
 - **Revised:** 2026-10-28: a device's tools are called on its control channel, as the cloud link 3.0 has it.
 

@@ -1,6 +1,6 @@
 # 0004 — Hosting: one machine at home behind a tunnel, LiveKit Cloud for media
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-28
 - **Revised:** 2026-10-28: the cloud link 3.0 names the media's server when each conversation starts.
 

@@ -1,6 +1,6 @@
 # 0001 — The architecture: a modular monolith, with ports and adapters
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-10-28
 - **Revised:** 2026-10-28, after a review for growth: the data's rules, skills as MCP servers, devices' links as ports, and how each part grows. Then to follow the cloud link 3.0: a room for each conversation, and a control channel for each device.
 
