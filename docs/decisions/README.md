@@ -8,3 +8,5 @@ Each significant decision is a short file: context, decision, alternatives consi
 
 | # | Decision | Status | Date |
 |---|---|---|---|
+| [0001](0001-architecture.md) | The architecture: a modular monolith, with ports and adapters | Proposed | 2026-10-28 |
+| [0002](0002-stack.md) | The stack: Python, with LiveKit Agents | Proposed | 2026-10-28 |

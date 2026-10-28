@@ -1,6 +1,6 @@
 # ai-cloud
 
-> **Status:** new. The repository's conventions are in place; there is no code yet. The first decisions come next: the stack, the conversation pipeline, storage and hosting ([dev log](docs/devlog/2026-10.md)).
+> **Status:** new. The repository's conventions are in place; there is no code yet. The [architecture](docs/architecture.md) and the stack are proposed; the conversation pipeline, hosting and owners' sign-in come next ([dev log](docs/devlog/2026-10.md)).
 
 The cloud side of the project's AI devices, the first of which is [ai-robot](https://github.com/trungnguyen278/ai-robot), a mobile robot with an expressive face that people talk to. A device handles its own body, screen and senses; the cloud is its AI, and runs what every device needs from it.
 
@@ -24,10 +24,11 @@ ai-cloud/
 └── .claude/     Task checklists for AI assistants (see AGENTS.md)
 ```
 
-The code's layout comes with the decision on the stack. Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain clone.
+The code's layout is set in the [architecture](docs/architecture.md#repository-layout). Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain clone.
 
 ## Documentation
 
+- [docs/architecture.md](docs/architecture.md) — modules, processes, the conversation pipeline, the budget, data, deployment
 - [docs/](docs/README.md) — the cloud's own decisions and its dev log
 - [ai-platform](https://github.com/trungnguyen278/ai-platform) — the protocols, and the decisions that span the repositories
 - [CONTRIBUTING.md](CONTRIBUTING.md) — branches, commits, documentation, secrets, licensing
