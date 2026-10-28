@@ -26,13 +26,15 @@ The cloud is the AI of every device in the project, and runs what a fleet of dev
                  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
+Devices keep a control channel to `api` at all times, a WebSocket, and join their LiveKit room only to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)). In phase one LiveKit is LiveKit Cloud ([ADR-0004](decisions/0004-hosting.md)).
+
 ## Process roles
 
 The same package runs as three processes, each started by its own entry point:
 
 | Process | What it runs | Grows by |
 |---|---|---|
-| `api` | FastAPI: devices' tokens, set-up's registration, the app's API, administration | more replicas: it keeps no state |
+| `api` | FastAPI: devices' control channels and tokens, set-up's registration, the app's API, administration | more replicas: it keeps no state |
 | `agent` | A LiveKit Agents worker: one job per device's session, in the device's room | more workers, among which LiveKit spreads the jobs |
 | `worker` | Background work: delivering domain events, schedules (reminders, rollouts, memory upkeep), notifications | more workers on the queue |
 
@@ -112,7 +114,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 
 | With | How |
 |---|---|
-| Devices | The cloud link: a LiveKit room (WebRTC) and its data channel, and the token endpoint |
+| Devices | The cloud link: a control channel always on (a WebSocket), and a LiveKit room to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)) |
 | The app | The app's API over HTTPS (to be defined), and push |
 | Set-up | The registration that the app relays (the set-up protocol) |
 
@@ -137,7 +139,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 - **Containers:** `api`, `agent`, `worker`, the LiveKit server, PostgreSQL, Redis and a reverse proxy.
   - Docker Compose runs them on one host to start, as Luni Cloud did.
   - The same images run later on a rented server or on Kubernetes.
-- LiveKit's media needs UDP, or a TURN relay. ADR-0004 decides how the host offers it, and whether LiveKit is self-hosted or LiveKit Cloud.
+- **Phase one** runs on a machine at home, reached through a Cloudflare Tunnel (HTTPS and WebSockets only), with media through LiveKit Cloud's free plan. No port opens at home ([ADR-0004](decisions/0004-hosting.md)).
 - **Environments:** development, with simulated providers and no accounts; production.
 
 ## Phases
@@ -203,7 +205,7 @@ Luni Cloud was the preview. What it taught, and what changes:
 | Memory in Redis Stack | PostgreSQL with pgvector; Redis only for what can be lost |
 | Free tiers, including unofficial endpoints, in fallback chains | Chains of official free tiers, metered and bounded |
 | Agent Brain v2: router, fillers, confirmations, barge-in, memory in tiers | Kept, in `conversation`'s domain |
-| Docker Compose behind a Cloudflare Tunnel | Kept for HTTPS; the media's path decided in ADR-0004 |
+| Docker Compose behind a Cloudflare Tunnel | Kept, for HTTPS and the control channel; media through LiveKit Cloud (ADR-0004) |
 
 ## Decisions
 
@@ -212,6 +214,6 @@ Luni Cloud was the preview. What it taught, and what changes:
 | [0001](decisions/0001-architecture.md) | This architecture |
 | [0002](decisions/0002-stack.md) | The stack: Python, LiveKit Agents, FastAPI |
 | [0003](decisions/0003-conversation-pipeline.md) | The conversation pipeline: Gemini Live first, a chain of free tiers behind it |
-| ADR-0004 | Hosting, and LiveKit's media |
+| [0004](decisions/0004-hosting.md) | Hosting: one machine at home behind a tunnel, LiveKit Cloud for media |
 | ADR-0005 | Owners' sign-in |
 | ADR-0006 | Personal data and the law |
