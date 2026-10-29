@@ -1,0 +1,55 @@
+[build-system]
+requires = ["hatchling>=1.33"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ai-cloud"
+version = "0.1.0"
+description = "The cloud side of the project's AI devices"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+dependencies = [
+  "fastapi>=0.162,<1",  # the api process (docs/decisions/0002-stack.md)
+  "pydantic>=2.14,<3",  # the configuration's checks, and FastAPI's
+  "uvicorn[standard]>=0.54,<1",  # serves the api
+]
+
+[project.scripts]
+ai-cloud = "ai_cloud.__main__:main"
+
+[dependency-groups]
+dev = [
+  "httpx2>=2.16,<3",  # Starlette's test client, and the tests' requests
+  "import-linter>=2.15,<3",  # the modules' boundaries (docs/decisions/0001-architecture.md)
+  "pytest>=9.2,<10",
+  "ruff>=0.17,<0.18",  # its rules change with each minor version
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ai_cloud"]
+
+[tool.pytest]
+minversion = "9.2"
+testpaths = ["tests"]
+addopts = ["-ra", "--import-mode=importlib"]
+strict = true
+filterwarnings = ["error"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+extend-exclude = ["platform"]  # ai-platform's code, checked in its own repository
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
+
+# The architecture's layers (docs/architecture.md, Modules): the process roles' entry
+# points above everything, the modules in between as they come, and shared beneath.
+[tool.importlinter]
+root_package = "ai_cloud"
+
+[[tool.importlinter.contracts]]
+name = "Layers: the entry points, then shared"
+type = "layers"
+layers = ["ai_cloud.entry", "ai_cloud.shared"]

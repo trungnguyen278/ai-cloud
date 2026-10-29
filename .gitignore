@@ -16,6 +16,21 @@ secrets/
 *.pem
 *.key
 
+# ---- Python ----
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+dist/
+.pytest_cache/
+.ruff_cache/
+.import_linter_cache/
+.coverage
+htmlcov/
+
+# ---- Settings for one machine (config/base.toml says how they merge) ----
+config/local.toml
+
 # ---- Claude Code: local settings (skills in .claude/skills/ are shared) ----
 .claude/settings.json
 .claude/settings.local.json

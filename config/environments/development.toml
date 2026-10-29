@@ -1,0 +1,9 @@
+# Development: on a developer's machine, with simulated providers and no accounts
+# (docs/architecture.md, Deployment).
+
+[api]
+# Each request in the console, with no proxy in front.
+access_log = true
+
+[logging]
+format = "text"
