@@ -1,0 +1,21 @@
+# The cloud's configuration, shared by every environment (docs/decisions/0002-stack.md).
+#
+# An environment's file (environments/<name>.toml) changes what it needs on top, then a
+# git-ignored local.toml, for one machine. Every value is required and is checked when a
+# process starts. Secrets never come from these files: they come from the environment,
+# or the deployment's secret store.
+
+[api]
+# The address the api process listens on: this machine only, unless an environment
+# needs more.
+host = "127.0.0.1"
+# Its port, behind the reverse proxy.
+port = 8000
+# Whether it logs each request. The reverse proxy logs them already.
+access_log = false
+
+[logging]
+# The least severe records kept: DEBUG, INFO, WARNING or ERROR.
+level = "INFO"
+# json: an object per line, for the machine that collects the logs; text: for a person.
+format = "json"

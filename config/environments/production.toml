@@ -1,0 +1,6 @@
+# Production: on the owner's machine, under Docker Compose (docs/decisions/0004-hosting.md).
+
+[api]
+# Every address of its container, so that the other containers reach it over Compose's
+# network.
+host = "0.0.0.0"

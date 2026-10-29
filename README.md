@@ -1,6 +1,6 @@
 # ai-cloud
 
-> **Status:** new. The repository's conventions are in place; there is no code yet. The [architecture](docs/architecture.md), the stack, the conversation pipeline and hosting are accepted; owners' sign-in and personal data come next ([dev log](docs/devlog/2026-10.md)).
+> **Status:** new. The skeleton runs: the `api` process answers its health check, and does nothing else yet; the token endpoint and the control channel come next. The [architecture](docs/architecture.md), the stack, the conversation pipeline and hosting are accepted; owners' sign-in and personal data are still to decide ([dev log](docs/devlog/2026-10.md)).
 
 The cloud side of the project's AI devices, the first of which is [ai-robot](https://github.com/trungnguyen278/ai-robot), a mobile robot with an expressive face that people talk to. A device handles its own body, screen and senses; the cloud is its AI, and runs what every device needs from it.
 
@@ -19,12 +19,34 @@ The device ⇄ cloud link and its requirements are defined in [ai-platform](http
 
 ```
 ai-cloud/
-├── docs/        Decision records (ADRs) and the dev log
-├── platform/    ai-platform, pinned: the protocols, and the decisions that span the repositories
-└── .claude/     Task checklists for AI assistants (see AGENTS.md)
+├── src/ai_cloud/  The package: shared, then the modules, then the process roles' entry points
+├── config/        base.toml, and a file per environment
+├── tests/         The tests, by package
+├── docs/          The architecture, decision records (ADRs) and the dev log
+├── platform/      ai-platform, pinned: the protocols, and the decisions that span the repositories
+└── .claude/       Task checklists for AI assistants (see AGENTS.md)
 ```
 
 The code's layout is set in the [architecture](docs/architecture.md#repository-layout). Clone with `git clone --recurse-submodules`, or run `git submodule update --init` after a plain clone.
+
+## Development
+
+It needs [uv](https://docs.astral.sh/uv/), which installs the Python that `.python-version` names.
+
+```sh
+uv sync                                          # the dependencies, as uv.lock has them
+uv run ai-cloud api --environment development    # then http://127.0.0.1:8000/health
+```
+
+The checks, as CI runs them:
+
+```sh
+uv run ruff check . && uv run ruff format --check .
+uv run lint-imports                              # the layers between the packages
+uv run pytest
+```
+
+The configuration is `config/base.toml`, then the environment's file in `config/environments/`, then an optional `config/local.toml` for one machine, which git ignores. Every value is required, and is checked when a process starts. The environment comes from `--environment` or `AI_CLOUD_ENVIRONMENT`; [.env.example](.env.example) lists the variables.
 
 ## Documentation
 
