@@ -61,7 +61,7 @@ The configuration is `config/base.toml`, then the environment's file in `config/
 |---|---|
 | [ai-robot](https://github.com/trungnguyen278/ai-robot) | The robot: hardware, software, face, firmware |
 | [ai-platform](https://github.com/trungnguyen278/ai-platform) | What the repositories share: the protocols, and the decisions that span them |
-| `ai-app` | The owner's app: set-up, settings, remote control (not created yet) |
+| [ai-app](https://github.com/trungnguyen278/ai-app) | The owner's app: set-up, settings, remote control |
 
 ## License
 
