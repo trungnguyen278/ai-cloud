@@ -144,7 +144,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 - **Containers:** `api`, `agent`, `worker`, the LiveKit server, PostgreSQL, Redis and a reverse proxy.
   - Docker Compose runs them on one host to start, as Luni Cloud did.
   - The same images run later on a rented server or on Kubernetes.
-- **Phase one** runs on a machine at home, reached through a Cloudflare Tunnel (HTTPS and WebSockets only), with media through LiveKit Cloud's free plan. No port opens at home ([ADR-0004](decisions/0004-hosting.md)).
+- **Phase one** runs on a machine at home, reached through a Cloudflare Tunnel (HTTPS and WebSockets only), with media through LiveKit Cloud's free plan. No port opens at home ([ADR-0004](decisions/0004-hosting.md)). Devices at home would talk through a LiveKit server at home instead, and reach the cloud on the home network: proposed in [ADR-0007](decisions/0007-media-at-home.md).
 - **Environments:** development, with simulated providers and no accounts; production.
 
 ## Phases
@@ -222,3 +222,4 @@ Luni Cloud was the preview. What it taught, and what changes:
 | [0004](decisions/0004-hosting.md) | Hosting: one machine at home behind a tunnel, LiveKit Cloud for media |
 | ADR-0005 | Owners' sign-in |
 | ADR-0006 | Personal data and the law |
+| [0007](decisions/0007-media-at-home.md) | Media at home: devices at home talk through a LiveKit server at home (proposed) |
