@@ -46,7 +46,7 @@ The same package runs as three processes, each started by its own entry point:
 
 | Module | Owns |
 |---|---|
-| `accounts` | Homes and their members: people with roles, and profiles for those who never sign in; sign-in; invitations ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)) |
+| `accounts` | Homes and their members: people with roles, and profiles for those who never sign in; sign-in ([ai-platform ADR-0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md)); invitations ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)) |
 | `devices` | The registry: each device's key, kind, model and software, its home, set-up's registrations, its tokens, its health. Each device's session on its control channel, the one way to call its tools. The control channel is a port: a WebSocket today, other kinds for devices that cannot keep one |
 | `conversation` | Conversations, the speech pipeline, turns, the persona for each kind of device and language, the tools of a turn, barge-in, fillers, confirmations |
 | `memory` | What a conversation remembers, summaries across conversations, long-term facts with their embeddings; retention and deletion |
@@ -126,7 +126,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 ## Security
 
 - **Devices** prove themselves with keys in their TPMs, which buy short-lived tokens for their control channel (ai-robot ADR-0010). Each conversation's room has a token of its own. The cloud acts within the safety classes they enforce.
-- **Owners** sign in as their own ADR decides. Every request is confined to the account and its devices (SEC-6).
+- **People** sign in with Google or Apple, to accounts the cloud keeps, and get the cloud's own tokens: short-lived access tokens, and refresh tokens rotated on every use ([ai-platform ADR-0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md)). Every request is confined to the account's homes and their devices (SEC-6).
 - **Secrets** come from the environment or a secret store, and are never logged.
 - **Limits** on rates and sizes at the edge (SEC-15) also bound what an abuser can cost.
 - **Keys rotate.** The keys that sign rooms' tokens, and those that verify sessions, are replaced on a schedule, and the old ones honoured until their tokens expire.
@@ -157,7 +157,7 @@ The architecture is for many owners; the cloud is built for one first, its maker
 | | Phase one: the maker alone | When others join |
 |---|---|---|
 | Homes and people | One home and its owner. Members and roles are in the data from the start. | Invitations, roles in the app, several homes |
-| Sign-in | The owner's account, through the same sign-in others will use (ADR-0005) | More accounts |
+| Sign-in | The owner's account, through the same sign-in others will use ([ai-platform ADR-0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md)) | More accounts |
 | Budget | One daily budget for the whole cloud, a guard against runaway costs | Quotas per home and per device |
 | Hosting | One host (ADR-0004) | The [growth](#growth) table |
 | Data and the law | The owner's own data | ADR-0006 settled and applied before the first other owner: consent, retention, deletion, export |
@@ -220,6 +220,6 @@ Luni Cloud was the preview. What it taught, and what changes:
 | [0002](decisions/0002-stack.md) | The stack: Python, LiveKit Agents, FastAPI |
 | [0003](decisions/0003-conversation-pipeline.md) | The conversation pipeline: Gemini Live first, a chain of free tiers behind it |
 | [0004](decisions/0004-hosting.md) | Hosting: one machine at home behind a tunnel, LiveKit Cloud for media |
-| ADR-0005 | Owners' sign-in |
+| [ai-platform 0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md) | Signing in: the cloud's own accounts, reached with Google or Apple |
 | ADR-0006 | Personal data and the law |
 | [0007](decisions/0007-media-at-home.md) | Media at home: devices at home talk through a LiveKit server at home (proposed) |
