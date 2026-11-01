@@ -223,3 +223,4 @@ Luni Cloud was the preview. What it taught, and what changes:
 | [ai-platform 0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md) | Signing in: the cloud's own accounts, reached with Google or Apple |
 | ADR-0006 | Personal data and the law |
 | [0007](decisions/0007-media-at-home.md) | Media at home: devices at home talk through a LiveKit server at home (proposed) |
+| [0008](decisions/0008-data-and-tokens.md) | Data and tokens: SQLAlchemy Core on asyncpg, Alembic, Redis, and PyJWT (proposed) |
