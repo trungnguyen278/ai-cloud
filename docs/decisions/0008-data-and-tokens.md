@@ -1,6 +1,6 @@
 # 0008 — Data and tokens: SQLAlchemy Core on asyncpg, Alembic, Redis, and PyJWT
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-11-01
 
 ## Context
