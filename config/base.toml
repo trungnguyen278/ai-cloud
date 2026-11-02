@@ -13,9 +13,102 @@ host = "127.0.0.1"
 port = 8000
 # Whether it logs each request. The reverse proxy logs them already.
 access_log = false
+# The proxies whose X-Forwarded-For names the client: the reverse proxy in front of the
+# api, by address or network. Rate limits count by the address it gives, so it must be
+# listed, or every request would count as the proxy's own.
+forwarded_allow_ips = ["127.0.0.1", "::1"]
+# Bytes a request's body may have at most. The app API's largest is an ID token with
+# Apple's code, some 10 KB.
+max_body_size = 65536
 
 [logging]
 # The least severe records kept: DEBUG, INFO, WARNING or ERROR.
 level = "INFO"
 # json: an object per line, for the machine that collects the logs; text: for a person.
 format = "json"
+
+[database]
+# PostgreSQL (docs/decisions/0008-data-and-tokens.md). Its URL is a secret:
+# AI_CLOUD_DATABASE_URL.
+#
+# Connections each process keeps open.
+pool_size = 5
+# Connections it may open beyond those, when they are all busy.
+max_overflow = 5
+# Seconds a request waits for a free connection before it fails.
+pool_timeout = 10
+# Seconds to open a connection.
+connect_timeout = 10
+# Seconds a statement may run before it is cancelled.
+command_timeout = 30
+
+[redis]
+# Redis, for what may be lost: nonces, rate limits. Its URL is a secret:
+# AI_CLOUD_REDIS_URL.
+#
+# Seconds to open a connection.
+connect_timeout = 5
+# Seconds to wait for an answer.
+timeout = 5
+# Connections each process may keep open.
+max_connections = 50
+
+[tokens]
+# The cloud's own tokens: people's sessions, and devices' to come. Their keys are a
+# secret: AI_CLOUD_SIGNING_KEYS.
+#
+# The issuer the cloud names in them (their iss). Only the cloud reads it.
+issuer = "ai-cloud"
+# Seconds by which clocks may disagree when a token's times are checked: the cloud's,
+# and those of the providers whose ID tokens it reads.
+leeway = 30
+
+[accounts]
+# Signing in, and the account (ai-platform's app API: platform/protocols/app/README.md,
+# whose Settings these are).
+#
+# The OAuth client IDs of the apps that may sign in.
+client_ids = ["ai-app"]
+# Seconds a nonce stays valid.
+nonce_lifetime = 300
+# Seconds an access token is valid. Ending a session takes effect at once, whatever it is.
+access_lifetime = 600
+# Seconds a session lasts unused: 90 days.
+refresh_idle = 7_776_000
+# Seconds since it was issued within which an ID token may delete its account.
+recent_sign_in = 300
+
+[accounts.nonce_rate]
+# How many nonces one address gets: 10 a minute.
+limit = 10
+period = 60
+# The prefix by which IPv6 addresses count: one host is commonly given a whole /64.
+ipv6_prefix = 64
+
+[accounts.jwks]
+# Fetching the keys Google and Apple publish for their ID tokens.
+#
+# Seconds to wait for them.
+timeout = 10
+# Seconds at least between two fetches, whatever tokens arrive and whatever the
+# providers say.
+refetch_interval = 60
+# Seconds they are kept when the provider does not say how long.
+default_max_age = 3600
+
+[accounts.google]
+# The project's Google client IDs that ID tokens may be issued to (their aud): none
+# until the project has its Google Cloud project, and nobody signs in with Google.
+client_ids = []
+
+[accounts.development]
+# The development provider, which signs test people in without Google or Apple (the app
+# API's Development). Whoever reaches the api can then sign in as anyone: on in the
+# development environment only.
+enabled = false
+# The issuer of its ID tokens.
+issuer = "ai-cloud-development"
+# The app its ID tokens are for: one of client_ids.
+client_id = "ai-app"
+# Seconds its ID tokens are valid.
+id_token_lifetime = 600

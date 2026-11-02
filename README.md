@@ -1,6 +1,6 @@
 # ai-cloud
 
-> **Status:** new. The skeleton runs: the `api` process answers its health check, and does nothing else yet; the token endpoint and the control channel come next. The [architecture](docs/architecture.md), the stack, the conversation pipeline and hosting are accepted; owners' sign-in and personal data are still to decide ([dev log](docs/devlog/2026-10.md)).
+> **Status:** early. The `api` process signs people in through ai-platform's app API 1.0, with Google and, in development, test people; Apple, devices' tokens and the control channel come next. The [architecture](docs/architecture.md), the stack, the conversation pipeline, hosting, and data and tokens are accepted; personal data and the law are still to decide ([dev log](docs/devlog/2026-11.md)).
 
 The cloud side of the project's AI devices, the first of which is [ai-robot](https://github.com/trungnguyen278/ai-robot), a mobile robot with an expressive face that people talk to. A device handles its own body, screen and senses; the cloud is its AI, and runs what every device needs from it.
 
@@ -22,6 +22,7 @@ ai-cloud/
 ├── src/ai_cloud/  The package: shared, then the modules, then the process roles' entry points
 ├── config/        base.toml, and a file per environment
 ├── tests/         The tests, by package
+├── deploy/        Compose files: PostgreSQL and Redis for development
 ├── docs/          The architecture, decision records (ADRs) and the dev log
 ├── platform/      ai-platform, pinned: the protocols, and the decisions that span the repositories
 └── .claude/       Task checklists for AI assistants (see AGENTS.md)
@@ -31,14 +32,20 @@ The code's layout is set in the [architecture](docs/architecture.md#repository-l
 
 ## Development
 
-It needs [uv](https://docs.astral.sh/uv/), which installs the Python that `.python-version` names.
+It needs [uv](https://docs.astral.sh/uv/), which installs the Python that `.python-version` names, and Docker, running, for PostgreSQL and Redis.
 
 ```sh
-uv sync                                          # the dependencies, as uv.lock has them
-uv run ai-cloud api --environment development    # then http://127.0.0.1:8000/health
+uv sync                                                    # the dependencies, as uv.lock has them
+docker compose -f deploy/compose.development.yaml up -d    # PostgreSQL and Redis, on this machine only
+cp .env.example .env                                       # then set AI_CLOUD_SIGNING_KEYS in it,
+uv run ai-cloud signing-key                                # to a new key this prints
+uv run --env-file .env ai-cloud migrate                    # the tables, at their newest migration
+uv run --env-file .env ai-cloud api                        # then http://127.0.0.1:8000/health
 ```
 
-The checks, as CI runs them:
+In the development environment, test people sign in without Google or Apple (the app API's Development).
+
+The checks, as CI runs them. The tests start PostgreSQL and Redis in containers of their own:
 
 ```sh
 uv run ruff check . && uv run ruff format --check .
@@ -46,7 +53,7 @@ uv run lint-imports                              # the layers between the packag
 uv run pytest
 ```
 
-The configuration is `config/base.toml`, then the environment's file in `config/environments/`, then an optional `config/local.toml` for one machine, which git ignores. Every value is required, and is checked when a process starts. The environment comes from `--environment` or `AI_CLOUD_ENVIRONMENT`; [.env.example](.env.example) lists the variables.
+The configuration is `config/base.toml`, then the environment's file in `config/environments/`, then an optional `config/local.toml` for one machine, which git ignores. Every value is required, and is checked when a process starts. The environment comes from `--environment` or `AI_CLOUD_ENVIRONMENT`. Secrets come from the environment, or from files a secret store mounts; [.env.example](.env.example) lists them.
 
 ## Documentation
 

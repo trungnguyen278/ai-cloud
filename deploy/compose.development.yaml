@@ -1,0 +1,40 @@
+# SPDX-License-Identifier: MIT
+# PostgreSQL and Redis on a developer's machine (docs/decisions/0008-data-and-tokens.md),
+# listening on this machine only. The cloud's own processes run with uv beside them.
+#
+#   docker compose -f deploy/compose.development.yaml up -d
+#
+# The tests run these same images, in containers of their own (tests/conftest.py).
+name: ai-cloud-development
+
+services:
+  postgres:
+    image: postgres:18-alpine
+    environment:
+      # A database for development only; .env.example's AI_CLOUD_DATABASE_URL matches.
+      POSTGRES_USER: ai_cloud
+      POSTGRES_PASSWORD: development
+      POSTGRES_DB: ai_cloud
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      # From PostgreSQL 18, the image keeps its data under /var/lib/postgresql/18.
+      - postgres:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD", "pg_isready", "--username", "ai_cloud", "--dbname", "ai_cloud"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres:

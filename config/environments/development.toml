@@ -7,3 +7,7 @@ access_log = true
 
 [logging]
 format = "text"
+
+[accounts.development]
+# Test people sign in without Google or Apple.
+enabled = true
