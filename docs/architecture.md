@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Nothing is built yet.
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process, and the `accounts` module, which signs people in through the app API 1.0, Apple aside.
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -42,6 +42,8 @@ The same package runs as three processes, each started by its own entry point:
 | `agent` | A LiveKit Agents worker: one job per conversation, in its room | more workers, among which LiveKit spreads the jobs |
 | `worker` | Background work: delivering domain events, schedules (reminders, rollouts, memory upkeep), notifications | more workers on the queue |
 
+`migrate` runs once for each deployment, before the new processes start: it brings each module's tables to its newest migration ([ADR-0008](decisions/0008-data-and-tokens.md)).
+
 ## Modules
 
 | Module | Owns |
@@ -65,7 +67,9 @@ Each module has the same shape:
 ├── ports/        what it needs from outside
 ├── adapters/     the ports' implementations: real services, and simulated ones
 ├── service.py    its use cases, joining the domain and the ports
-└── db/           its tables, in its own Postgres schema
+├── routes.py     its HTTP endpoints, if it has any, served by the api process
+├── settings.py   its table of the configuration
+└── db/           its tables, in its own Postgres schema, and their migrations
 ```
 
 ## How modules talk
@@ -107,6 +111,7 @@ The shape is decided here; the providers are chosen in ADR-0003.
 ## Data
 
 - **PostgreSQL** is the source of truth: one schema per module, migrations per module, and pgvector for the embeddings of `memory`.
+  - A module's migrations are a branch of the one Alembic environment, beside its tables, with its version table in its schema ([ADR-0008](decisions/0008-data-and-tokens.md)).
 - **Each module's data is its own.** Other modules refer to it by identifier only: no foreign keys or joins across schemas, and reads go through the owner's `api.py`. A module's tables can then move to a database of their own.
 - **Everything that grows with use carries `home_id`** ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)), so that the data can be partitioned or sharded by home. High-volume tables (usage, health reports, turns) are partitioned by time, and their old partitions dropped as their retention says.
 - **Redis** holds only what can be lost: caches, rate limits, presence, the event queue (Redis Streams). Losing it loses nothing that matters.
@@ -120,7 +125,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 | With | How |
 |---|---|
 | Devices | The cloud link: a control channel always on (a WebSocket), and a LiveKit room to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)) |
-| The app | The app's API over HTTPS (to be defined), and push |
+| The app | The app API over HTTPS (`platform/protocols/app/`; 1.0 signs people in), and push |
 | Set-up | The registration that the app relays (the set-up protocol) |
 
 ## Security
@@ -188,11 +193,10 @@ How each part grows, should the project grow a lot. None of it changes a module'
 ai-cloud/
 ├── platform/            ai-platform, pinned
 ├── src/ai_cloud/
-│   ├── shared/
+│   ├── shared/          and migrations/: the Alembic environment of every module
 │   ├── accounts/  devices/  conversation/  memory/
 │   ├── skills/  updates/  operations/  notifications/
-│   └── entry/           api.py · agent.py · worker.py
-├── migrations/          one history per module
+│   └── entry/           api.py · migrate.py · agent.py · worker.py
 ├── config/              base.toml, and one file per environment
 ├── tests/               per module, and end to end against a simulated device
 ├── deploy/              Compose files and container images

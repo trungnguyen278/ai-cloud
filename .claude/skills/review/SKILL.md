@@ -33,11 +33,13 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 
 - Every request is confined to the device that made it and the account it is bound to (SEC-6).
 - No secret in the code, the configuration, the logs or an error message. Logs and health data carry no audio, images or conversations (PRIV-5).
+- A log record's fields (`extra`) never take a name of `LogRecord`'s own, such as `module` or `name`: logging raises when the record is made, at a level the tests might not reach. The tests make every record, whatever its level.
 - What is kept about an owner can be found and deleted (PRIV-4).
 
 ### Concurrency
 
 - Nothing blocks an event loop: file and network I/O are asynchronous, or run in a worker.
+- Transactions lock rows in one order, the one a cascade takes (an account, then its sessions, then their tokens), so that none deadlocks with a deletion. A race the code handles, such as two first sign-ins of one identity, has a test that runs it.
 - A failure in one robot's session never stops another's.
 
 ### Tests
