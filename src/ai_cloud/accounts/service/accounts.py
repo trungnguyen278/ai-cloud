@@ -1,13 +1,11 @@
 # SPDX-License-Identifier: MIT
-"""The accounts' use cases: signing in, sessions, the account and its identities
-(ai-platform ADR-0008, and its app API 1.0)."""
+"""The use cases of signing in, sessions, the account and its identities (ai-platform
+ADR-0008, and its app API)."""
 
-import base64
-import binascii
 import logging
 import uuid
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from uuid import UUID
 
 from ai_cloud.accounts.domain.errors import (
@@ -17,12 +15,10 @@ from ai_cloud.accounts.domain.errors import (
     IdTokenRefused,
     InvalidClient,
     InvalidGrant,
-    InvalidPageToken,
     LastIdentity,
     NotFound,
     PreconditionFailed,
     RateLimited,
-    RecentSignInRequired,
     TooManyIdentities,
     Unauthenticated,
 )
@@ -31,17 +27,21 @@ from ai_cloud.accounts.domain.model import (
     Account,
     AccountChanges,
     Identity,
+    Page,
     Principal,
     Session,
-    SessionPage,
-    SignIn,
     Tokens,
     display_name_for,
+    etag_matches,
     new_nonce,
     new_refresh_token,
+    page_after,
+    page_of,
     token_hash,
 )
-from ai_cloud.accounts.ports import DevelopmentIdTokens, IdTokens, Nonces, Store, Transaction
+from ai_cloud.accounts.ports import DevelopmentIdTokens, Nonces, Store
+from ai_cloud.accounts.service.common import SignIns, account_of, check_signs_in_to, now
+from ai_cloud.accounts.service.homes import remove_from_homes
 from ai_cloud.accounts.settings import AccountsSettings
 from ai_cloud.shared.jose import SigningKeys, TokenError, TokenSettings
 from ai_cloud.shared.protocols import protocol_schema
@@ -66,7 +66,7 @@ class AccountsService:
         store: Store,
         nonces: Nonces,
         nonce_rate: RateLimiter,
-        id_tokens: IdTokens,
+        sign_ins: SignIns,
         development: DevelopmentIdTokens | None,
     ) -> None:
         self._settings = settings
@@ -75,7 +75,7 @@ class AccountsService:
         self._store = store
         self._nonces = nonces
         self._nonce_rate = nonce_rate
-        self._id_tokens = id_tokens
+        self._sign_ins = sign_ins
         self._development = development
         self._idle = timedelta(seconds=settings.refresh_idle)
         self._email_schema = protocol_schema("app", "email")
@@ -97,9 +97,9 @@ class AccountsService:
         """Sign in with a provider's ID token: its identity's account, created at its
         first sign-in, gets a new session."""
         self._check_client(client_id)
-        sign_in = await self._sign_in(id_token)
+        sign_in = await self._sign_ins.verify(id_token)
         email = self._email(sign_in.email)
-        now = _now()
+        moment = now()
         # A first sign-in can race another of the same identity once: the second then
         # finds the account the first made. One that races the account's deletion starts
         # again, and makes a new account.
@@ -113,7 +113,7 @@ class AccountsService:
                             raise InvalidGrant("the ID token gives neither a name nor an email")
                         account_id = uuid.uuid7()
                         identity = Identity(
-                            uuid.uuid7(), sign_in.provider, sign_in.subject, email, now
+                            uuid.uuid7(), sign_in.provider, sign_in.subject, email, moment
                         )
                         await store.add_account(
                             Account(
@@ -122,7 +122,7 @@ class AccountsService:
                                 email=email,
                                 languages=(),
                                 identities=(identity,),
-                                create_time=now,
+                                create_time=moment,
                                 version=1,
                             )
                         )
@@ -134,8 +134,8 @@ class AccountsService:
                             raise IdentityConflict("the account was deleted meanwhile")
                         if email is not None and email != owner.email:
                             await store.set_identity_email(owner.identity_id, email)
-                    await store.end_idle_sessions(account_id, unused_since=now - self._idle)
-                    session = Session(uuid.uuid7(), account_id, client_id, label, now, now)
+                    await store.end_idle_sessions(account_id, unused_since=moment - self._idle)
+                    session = Session(uuid.uuid7(), account_id, client_id, label, moment, moment)
                     refresh_token = new_refresh_token()
                     await store.add_session(session, token_hash(refresh_token))
                 break
@@ -158,7 +158,7 @@ class AccountsService:
         ends its session (RFC 9700, 4.14.2)."""
         self._check_client(client_id)
         presented = token_hash(refresh_token)
-        now = _now()
+        moment = now()
         ended: str | None = None
         async with self._store.transaction() as store:
             session_id = await store.refresh_token_session(presented)
@@ -170,16 +170,16 @@ class AccountsService:
                 raise InvalidGrant("unknown refresh token")
             if session.client_id != client_id:
                 raise InvalidGrant("the refresh token was issued to another client")
-            if not await store.use_refresh_token(presented, now):
+            if not await store.use_refresh_token(presented, moment):
                 await store.end_session(session.id, account_id=None)
                 ended = "refresh token used twice: the session has ended"
-            elif session.last_use_time <= now - self._idle:
+            elif session.last_use_time <= moment - self._idle:
                 await store.end_session(session.id, account_id=None)
                 ended = "the session was left unused too long"
             else:
                 next_token = new_refresh_token()
                 await store.continue_session(
-                    session.id, token_hash(next_token), now, forget_before=now - self._idle
+                    session.id, token_hash(next_token), moment, forget_before=moment - self._idle
                 )
         if ended is not None:
             log.warning(
@@ -241,15 +241,15 @@ class AccountsService:
 
     async def account(self, principal: Principal) -> Account:
         async with self._store.transaction() as store:
-            return await self._account(store, principal, lock=False)
+            return await account_of(store, principal, lock=False)
 
     async def update_account(
         self, principal: Principal, changes: AccountChanges, if_match: str | None
     ) -> Account:
         """Change the account, if ``if_match`` names its ETag, or is ``None``."""
         async with self._store.transaction() as store:
-            account = await self._account(store, principal, lock=True)
-            if if_match is not None and not _etag_matches(if_match, account.etag):
+            account = await account_of(store, principal, lock=True)
+            if if_match is not None and not etag_matches(if_match, account.etag):
                 raise PreconditionFailed("the account changed since that ETag")
             updated = replace(
                 account,
@@ -262,21 +262,13 @@ class AccountsService:
 
     async def delete_account(self, principal: Principal, id_token: str) -> None:
         """Delete the account, with everything that is the person's, once they have just
-        signed in again with one of its identities."""
-        try:
-            sign_in = await self._sign_in(id_token)
-        except InvalidGrant as error:
-            raise RecentSignInRequired(str(error)) from None
-        age = _now() - sign_in.issue_time
-        if age > timedelta(seconds=self._settings.recent_sign_in):
-            raise RecentSignInRequired("the ID token was issued too long ago")
+        signed in again with one of its identities. Its person leaves every home, and a home
+        it owns goes with it, unless others with accounts are in that home."""
+        sign_in = await self._sign_ins.recent(id_token)
         async with self._store.transaction() as store:
-            account = await self._account(store, principal, lock=True)
-            if not any(
-                identity.provider == sign_in.provider and identity.subject == sign_in.subject
-                for identity in account.identities
-            ):
-                raise RecentSignInRequired("the ID token is not one of the account's identities")
+            account = await account_of(store, principal, lock=True)
+            check_signs_in_to(account, sign_in)
+            await remove_from_homes(store, account.id)
             await store.delete_account(account.id)
         log.info("account deleted", extra={"account": str(account.id)})
 
@@ -285,14 +277,14 @@ class AccountsService:
     async def link_identity(self, principal: Principal, id_token: str) -> Identity:
         """Add the identity of a provider's ID token to the account."""
         try:
-            sign_in = await self._sign_in(id_token)
+            sign_in = await self._sign_ins.verify(id_token)
         except InvalidGrant as error:
             raise IdTokenRefused(str(error)) from None
-        now = _now()
+        moment = now()
         for attempt in range(2):
             try:
                 async with self._store.transaction() as store:
-                    account = await self._account(store, principal, lock=True)
+                    account = await account_of(store, principal, lock=True)
                     owner = await store.identity(sign_in.provider, sign_in.subject)
                     if owner is not None and owner.account_id == account.id:
                         raise IdentityLinked("the identity is this account's already")
@@ -305,7 +297,7 @@ class AccountsService:
                         sign_in.provider,
                         sign_in.subject,
                         self._email(sign_in.email),
-                        now,
+                        moment,
                     )
                     await store.add_identity(account.id, identity)
                     await store.save_account(replace(account, version=account.version + 1))
@@ -321,7 +313,7 @@ class AccountsService:
 
     async def remove_identity(self, principal: Principal, identity_id: UUID) -> None:
         async with self._store.transaction() as store:
-            account = await self._account(store, principal, lock=True)
+            account = await account_of(store, principal, lock=True)
             if identity_id not in {identity.id for identity in account.identities}:
                 raise NotFound("no such identity in the account")
             if len(account.identities) == 1:
@@ -337,20 +329,18 @@ class AccountsService:
 
     async def sessions(
         self, principal: Principal, page_size: int, page_token: str | None
-    ) -> SessionPage:
+    ) -> Page[Session]:
         """A page of the account's sessions, newest first. ``InvalidPageToken`` for a
         page token this list did not give."""
-        after = _page_after(page_token) if page_token else None
+        after = page_after(page_token)
         async with self._store.transaction() as store:
             found = await store.sessions(
                 principal.account_id,
-                used_since=_now() - self._idle,
+                used_since=now() - self._idle,
                 after=after,
                 limit=page_size + 1,
             )
-        page = tuple(found[:page_size])
-        more = len(found) > page_size
-        return SessionPage(page, _page_token(page[-1].id) if more else "")
+        return page_of(found, page_size, lambda session: session.id)
 
     async def end_session(self, principal: Principal, session_id: UUID) -> None:
         async with self._store.transaction() as store:
@@ -380,21 +370,8 @@ class AccountsService:
         if client_id not in self._settings.client_ids:
             raise InvalidClient("unknown client")
 
-    async def _sign_in(self, id_token: str) -> SignIn:
-        """A provider's ID token, verified, and its nonce used."""
-        sign_in = await self._id_tokens.verify(id_token)
-        if not await self._nonces.consume(sign_in.nonce):
-            raise InvalidGrant("the ID token's nonce is unknown, used or expired")
-        return sign_in
-
-    async def _account(self, store: Transaction, principal: Principal, *, lock: bool) -> Account:
-        account = await store.account(principal.account_id, lock=lock)
-        if account is None:
-            raise Unauthenticated("the account no longer exists")
-        return account
-
     def _tokens_for(self, session: Session, refresh_token: str) -> Tokens:
-        now = int(_now().timestamp())
+        issued = int(now().timestamp())
         lifetime = self._settings.access_lifetime
         access_token = self._keys.sign(
             {
@@ -403,8 +380,8 @@ class AccountsService:
                 "aud": APP_AUDIENCE,
                 "client_id": session.client_id,
                 "sid": str(session.id),
-                "iat": now,
-                "exp": now + lifetime,
+                "iat": issued,
+                "exp": issued + lifetime,
                 "jti": str(uuid.uuid7()),
             },
             typ=ACCESS_TOKEN_TYPE,
@@ -426,29 +403,8 @@ class AccountsService:
         return claims
 
 
-def _now() -> datetime:
-    return datetime.now(UTC)
-
-
 def _principal(claims: dict[str, object]) -> Principal:
     try:
         return Principal(UUID(str(claims["sub"])), UUID(str(claims["sid"])))
     except ValueError:
         raise Unauthenticated("the access token is malformed") from None
-
-
-def _etag_matches(if_match: str, etag: str) -> bool:
-    """Whether ``If-Match`` names ``etag``: as written, the app API's ETags being
-    compared as the account gives them; ``*`` matches any."""
-    return any(candidate.strip() in ("*", etag) for candidate in if_match.split(","))
-
-
-def _page_token(last: UUID) -> str:
-    return base64.urlsafe_b64encode(last.bytes).rstrip(b"=").decode()
-
-
-def _page_after(page_token: str) -> UUID:
-    try:
-        return UUID(bytes=base64.urlsafe_b64decode(page_token + "=" * (-len(page_token) % 4)))
-    except binascii.Error, ValueError:
-        raise InvalidPageToken("the page token is not one this list gave") from None

@@ -1,6 +1,6 @@
 # ai-cloud
 
-> **Status:** early. The `api` process signs people in through ai-platform's app API 1.0, with Google and, in development, test people; Apple, devices' tokens and the control channel come next. The [architecture](docs/architecture.md), the stack, the conversation pipeline, hosting, and data and tokens are accepted; personal data and the law are still to decide ([dev log](docs/devlog/2026-11.md)).
+> **Status:** early. The `api` process serves ai-platform's app API 1.1: signing in, with Google and, in development, test people, and homes with their people and invitations. Apple, the page that an invitation's link opens, devices' tokens and the control channel come next. The [architecture](docs/architecture.md), the stack, the conversation pipeline, hosting, and data and tokens are accepted; personal data and the law are still to decide ([dev log](docs/devlog/2026-11.md)).
 
 The cloud side of the project's AI devices, the first of which is [ai-robot](https://github.com/trungnguyen278/ai-robot), a mobile robot with an expressive face that people talk to. A device handles its own body, screen and senses; the cloud is its AI, and runs what every device needs from it.
 

@@ -7,7 +7,7 @@ from pydantic import Field, model_validator
 
 from ai_cloud.shared.config import Settings
 from ai_cloud.shared.jose import JwksSettings
-from ai_cloud.shared.rates import AddressRateSettings
+from ai_cloud.shared.rates import AddressRateSettings, RateSettings
 
 # Bounds the app API sets on what the cloud answers (platform/protocols/app/schema.json).
 _NONCE_RESPONSE_MAX = 3600  # $defs/nonce_response, expires_in
@@ -44,9 +44,21 @@ class AccountsSettings(Settings):
     access_lifetime: Annotated[int, Field(ge=1, le=_TOKEN_RESPONSE_MAX)]
     # Seconds a session lasts unused (refresh_idle).
     refresh_idle: Annotated[int, Field(ge=1)]
-    # Seconds since it was issued within which an ID token may delete its account
-    # (recent_sign_in).
+    # Seconds since it was issued within which an ID token may delete its account or a
+    # home, or hand a home over (recent_sign_in).
     recent_sign_in: Annotated[int, Field(ge=1)]
+    # Seconds a retry with an Idempotency-Key gets the first answer (idempotency_retention).
+    idempotency_retention: Annotated[int, Field(ge=1)]
+    # How many homes an account may be in (homes_per_account).
+    homes_per_account: Annotated[int, Field(ge=1)]
+    # How many people a home may have, profiles included (members_per_home).
+    members_per_home: Annotated[int, Field(ge=1)]
+    # Seconds an invitation's code is valid (invitation_lifetime).
+    invitation_lifetime: Annotated[int, Field(ge=1)]
+    # How many open invitations a home may have (invitations_per_home).
+    invitations_per_home: Annotated[int, Field(ge=1)]
+    # How many invitation codes an account may try (invitation_rate).
+    invitation_rate: RateSettings
     # How many nonces an address gets (nonce_rate).
     nonce_rate: AddressRateSettings
     # Fetching the providers' published keys.

@@ -5,10 +5,21 @@ vouch for people."""
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
 
-from ai_cloud.accounts.domain.model import Account, Identity, Session, SignIn
+from ai_cloud.accounts.domain.model import (
+    Account,
+    FirstAnswer,
+    Home,
+    HomeView,
+    IdempotencyKey,
+    Identity,
+    Invitation,
+    Member,
+    Session,
+    SignIn,
+)
 
 
 @dataclass(frozen=True)
@@ -89,6 +100,127 @@ class Transaction(Protocol):
     ) -> list[Session]:
         """The account's sessions used since ``used_since``, newest first, from the one
         after ``after``."""
+        ...
+
+    # Homes. A change to a home, or to what is in it, holds the home first. What holds an
+    # account too holds it before any home, and homes in the order of their identifiers, so
+    # that no two transactions wait for each other.
+
+    async def add_home(self, home: Home) -> None: ...
+
+    async def home(self, home_id: UUID, *, lock: bool) -> Home | None:
+        """The home; ``lock`` holds it until the transaction ends, so that changes to it
+        and to what is in it happen one after the other."""
+        ...
+
+    async def save_home(self, home: Home) -> None:
+        """Write the home's name, time zone, languages and version."""
+        ...
+
+    async def delete_home(self, home_id: UUID) -> None:
+        """Delete the home, with its people and its invitations."""
+        ...
+
+    async def homes_of(self, account_id: UUID, *, after: UUID | None, limit: int) -> list[HomeView]:
+        """The homes the account is in, oldest first, from the one after ``after``."""
+        ...
+
+    async def home_ids_of(self, account_id: UUID) -> list[UUID]:
+        """Every home the account is in, in the order of their identifiers."""
+        ...
+
+    async def count_homes(self, account_id: UUID) -> int:
+        """How many homes the account is in."""
+        ...
+
+    # The people in a home.
+
+    async def add_member(self, member: Member) -> None: ...
+
+    async def member(self, home_id: UUID, member_id: UUID) -> Member | None:
+        """The person ``member_id`` names in that home; none in any other."""
+        ...
+
+    async def member_of_account(self, home_id: UUID, account_id: UUID) -> Member | None:
+        """The account's person in that home."""
+        ...
+
+    async def members(self, home_id: UUID, *, after: UUID | None, limit: int) -> list[Member]:
+        """The home's people, oldest first, from the one after ``after``."""
+        ...
+
+    async def count_members(self, home_id: UUID) -> int:
+        """How many people the home has, profiles included."""
+        ...
+
+    async def has_other_accounts(self, home_id: UUID, member_id: UUID) -> bool:
+        """Whether the home has a person with an account other than ``member_id``."""
+        ...
+
+    async def save_member(self, member: Member) -> None:
+        """Write the person's name, role and version."""
+        ...
+
+    async def delete_member(self, member_id: UUID) -> None:
+        """Delete the person, with the invitations they made or used."""
+        ...
+
+    # Invitations.
+
+    async def add_invitation(self, invitation: Invitation, code_hash: bytes) -> None: ...
+
+    async def invitation_by_code(self, code_hash: bytes) -> Invitation | None:
+        """The invitation whose code has that hash, whatever its state."""
+        ...
+
+    async def open_invitations(
+        self, home_id: UUID, now: datetime, *, after: UUID | None, limit: int
+    ) -> list[Invitation]:
+        """The home's unused and unexpired invitations, oldest first, from the one after
+        ``after``."""
+        ...
+
+    async def count_open_invitations(self, home_id: UUID, now: datetime) -> int: ...
+
+    async def use_invitation(self, invitation_id: UUID, member_id: UUID) -> None:
+        """Note that the invitation brought ``member_id`` in."""
+        ...
+
+    async def revoke_invitation(self, home_id: UUID, invitation_id: UUID, now: datetime) -> bool:
+        """Delete the invitation, if it is that home's, unused and unexpired; whether it
+        was."""
+        ...
+
+    async def revoke_invitations_by(self, member_id: UUID) -> None:
+        """Delete the unused invitations that person made."""
+        ...
+
+    async def forget_expired_invitations(self, home_id: UUID, now: datetime) -> None: ...
+
+    # The first answers to requests with an Idempotency-Key.
+
+    async def hold_idempotency_key(self, account_id: UUID, key: UUID) -> bool:
+        """Hold the account's key until the transaction ends, without waiting; whether no
+        other transaction holds it."""
+        ...
+
+    async def first_answer(
+        self, account_id: UUID, key: UUID, *, since: datetime
+    ) -> FirstAnswer | None:
+        """What the key's first request was answered, if it came since ``since``."""
+        ...
+
+    async def add_first_answer(
+        self,
+        account_id: UUID,
+        key: IdempotencyKey,
+        member_id: UUID,
+        body: dict[str, Any],
+        now: datetime,
+    ) -> None:
+        """Keep ``body``, the answer to a request that made a home or a person, in place of
+        an older answer under the same key. It holds their names, so it goes with
+        ``member_id``."""
         ...
 
 

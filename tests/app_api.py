@@ -2,6 +2,8 @@
 """An app that speaks the app API (platform/protocols/app/README.md) to an api served in
 the tests' own process, and checks every answer against ai-platform's schema."""
 
+import uuid
+from dataclasses import dataclass
 from typing import Any
 
 import httpx2
@@ -51,6 +53,28 @@ def oauth_error(response: httpx2.Response, error: str, status: int = 400) -> str
 def bearer(tokens: dict[str, Any] | str) -> dict[str, str]:
     token = tokens if isinstance(tokens, str) else tokens["access_token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+def once(tokens: dict[str, Any], key: str | None = None) -> dict[str, str]:
+    """The headers of a request with an Idempotency-Key: ``key``, or a new one."""
+    return {**bearer(tokens), "Idempotency-Key": key or f'"{uuid.uuid7()}"'}
+
+
+@dataclass
+class Family:
+    """A home with one person of each kind, and someone who is not in it."""
+
+    home: dict[str, Any]
+    owner: dict[str, Any]
+    admin: dict[str, Any]
+    member: dict[str, Any]
+    outsider: dict[str, Any]
+    # The identifier in the home of each of those people, and of a profile.
+    ids: dict[str, str]
+
+    @property
+    def path(self) -> str:
+        return f"/app/v1/homes/{self.home['id']}"
 
 
 class Cloud:
@@ -127,6 +151,83 @@ class Cloud:
         response = await self.http.get("/app/v1/account", headers=bearer(tokens))
         assert response.status_code == 200, response.text
         return conforms(response, "account")
+
+    async def create_home(self, tokens: dict[str, Any], **changes: Any) -> dict[str, Any]:
+        body = {
+            "name": "Nhà Linh",
+            "time_zone": "Asia/Ho_Chi_Minh",
+            "languages": ["vi", "en"],
+            **changes,
+        }
+        response = await self.http.post("/app/v1/homes", json=body, headers=once(tokens))
+        assert response.status_code == 201, response.text
+        assert response.headers["cache-control"] == "no-store"
+        return conforms(response, "home")
+
+    async def home(self, tokens: dict[str, Any], home: dict[str, Any]) -> dict[str, Any]:
+        response = await self.http.get(f"/app/v1/homes/{home['id']}", headers=bearer(tokens))
+        assert response.status_code == 200, response.text
+        return conforms(response, "home")
+
+    async def members(self, tokens: dict[str, Any], home: dict[str, Any]) -> list[dict[str, Any]]:
+        response = await self.http.get(
+            f"/app/v1/homes/{home['id']}/members", headers=bearer(tokens)
+        )
+        assert response.status_code == 200, response.text
+        return conforms(response, "member_list")["members"]
+
+    async def add_profile(
+        self, tokens: dict[str, Any], home: dict[str, Any], name: str = "Bà"
+    ) -> dict[str, Any]:
+        response = await self.http.post(
+            f"/app/v1/homes/{home['id']}/members",
+            json={"display_name": name},
+            headers=once(tokens),
+        )
+        assert response.status_code == 201, response.text
+        return conforms(response, "member")
+
+    async def invite(self, tokens: dict[str, Any], home: dict[str, Any]) -> dict[str, Any]:
+        response = await self.http.post(
+            f"/app/v1/homes/{home['id']}/invitations", headers=bearer(tokens)
+        )
+        assert response.status_code == 201, response.text
+        assert response.headers["cache-control"] == "no-store"
+        return conforms(response, "invitation")
+
+    async def accept(self, tokens: dict[str, Any], code: str) -> httpx2.Response:
+        return await self.http.post(
+            "/app/v1/invitations:accept", json={"code": code}, headers=bearer(tokens)
+        )
+
+    async def join(
+        self, tokens: dict[str, Any], home: dict[str, Any], inviter: dict[str, Any]
+    ) -> dict[str, Any]:
+        """Bring the person in with an invitation that ``inviter`` makes: the home, as that
+        person sees it."""
+        response = await self.accept(tokens, (await self.invite(inviter, home))["code"])
+        assert response.status_code == 201, response.text
+        return conforms(response, "home")
+
+    async def family(self) -> Family:
+        """A home with its owner, Linh; an admin, An; a member, Minh; and a profile, Bà. Bảo,
+        who has an account too, is not in it."""
+        owner = await self.sign_in("linh@example.com", "Linh")
+        admin = await self.sign_in("an@example.com", "An")
+        member = await self.sign_in("minh@example.com", "Minh")
+        outsider = await self.sign_in("bao@example.com", "Bảo")
+        home = await self.create_home(owner)
+        ids = {"owner": home["member_id"]}
+        ids["admin"] = (await self.join(admin, home, owner))["member_id"]
+        ids["member"] = (await self.join(member, home, owner))["member_id"]
+        ids["profile"] = (await self.add_profile(owner, home))["id"]
+        response = await self.http.patch(
+            f"/app/v1/homes/{home['id']}/members/{ids['admin']}",
+            json={"role": "admin"},
+            headers=bearer(owner),
+        )
+        assert response.status_code == 200, response.text
+        return Family(home, owner, admin, member, outsider, ids)
 
     async def sql(self, statement: str, **values: Any) -> list[Any]:
         """Run ``statement`` on the database, for what no request does, such as aging a

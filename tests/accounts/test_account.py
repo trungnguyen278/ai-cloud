@@ -66,6 +66,7 @@ async def test_if_match_changes_only_what_was_read(cloud) -> None:
         {"languages": "vi"},
         {"languages": ["vi", "vi"]},
         {"languages": ["not a tag"]},
+        {"languages": ["vi\n"]},
         {"languages": [f"l{n}" for n in range(11)]},
     ],
 )
@@ -84,6 +85,16 @@ async def test_a_change_is_json(cloud) -> None:
         "/app/v1/account",
         content=b"{not json",
         headers={**headers, "Content-Type": "application/json"},
+    )
+    problem(broken, 400)
+
+
+async def test_a_lone_surrogate_is_no_text(cloud) -> None:
+    tokens = await cloud.sign_in()
+    broken = await cloud.http.patch(
+        "/app/v1/account",
+        content=b'{"display_name": "Linh\\ud800"}',
+        headers={**bearer(tokens), "Content-Type": "application/json"},
     )
     problem(broken, 400)
 

@@ -38,11 +38,11 @@ class InvalidPageToken(AccountsError):
 
 
 class NotFound(AccountsError):
-    """No such identity or session in the account."""
+    """No such item in the account, or in a home it is in."""
 
 
 class PreconditionFailed(AccountsError):
-    """The account changed since the ETag the request named."""
+    """What the request changes has changed since the ETag it named."""
 
 
 class IdentityTaken(AccountsError):
@@ -62,8 +62,58 @@ class TooManyIdentities(AccountsError):
 
 
 class RecentSignInRequired(AccountsError):
-    """Deleting the account needs a fresh sign-in with one of its identities."""
+    """Deleting the account or a home, or handing a home over, needs a fresh sign-in with
+    one of the account's identities."""
 
 
 class IdentityConflict(AccountsError):
     """Storing an identity that another transaction stored first."""
+
+
+class RoleRequired(AccountsError):
+    """The person's role in the home does not allow this."""
+
+
+class OwnerCannotLeave(AccountsError):
+    """The owner leaves only by handing the home over or deleting it."""
+
+
+class OwnsHomeWithMembers(AccountsError):
+    """The account owns a home with other people with accounts, so it cannot delete itself
+    or that home yet."""
+
+
+class NotTransferable(AccountsError):
+    """A home is handed over only to another person in it with an account."""
+
+
+class RoleNotChangeable(AccountsError):
+    """A role is changed only on a person with an account who is not the owner."""
+
+
+class InvitationInvalid(AccountsError):
+    """An invitation's code is unknown, expired, revoked, or used by someone else."""
+
+
+class HomeLimitReached(AccountsError):
+    """The account is in as many homes as it may be."""
+
+
+class MemberLimitReached(AccountsError):
+    """The home has as many people as it may have."""
+
+
+class InvitationLimitReached(AccountsError):
+    """The home has as many open invitations as it may have."""
+
+
+class UnknownTimeZone(AccountsError):
+    """A time zone that the IANA database does not name."""
+
+
+class IdempotencyKeyBusy(AccountsError):
+    """The first request with this Idempotency-Key still runs: the app tries again."""
+
+
+class IdempotencyKeyReused(AccountsError):
+    """This Idempotency-Key was used for another request."""

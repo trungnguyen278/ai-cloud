@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process, and the `accounts` module, which signs people in through the app API 1.0, Apple aside.
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process, and the `accounts` module, which serves the app API 1.1, but for Apple and the page that an invitation's link opens.
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -72,6 +72,8 @@ Each module has the same shape:
 └── db/           its tables, in its own Postgres schema, and their migrations
 ```
 
+`routes.py` or `service.py` may grow into a package of that name, as in `accounts`, and what imports it does not change.
+
 ## How modules talk
 
 - **Within a process**, through each other's `api.py`.
@@ -125,7 +127,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 | With | How |
 |---|---|
 | Devices | The cloud link: a control channel always on (a WebSocket), and a LiveKit room to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)) |
-| The app | The app API over HTTPS (`platform/protocols/app/`; 1.0 signs people in), and push |
+| The app | The app API over HTTPS (`platform/protocols/app/`; 1.1 signs people in and keeps their homes), and push |
 | Set-up | The registration that the app relays (the set-up protocol) |
 
 ## Security
@@ -161,7 +163,7 @@ The architecture is for many owners; the cloud is built for one first, its maker
 
 | | Phase one: the maker alone | When others join |
 |---|---|---|
-| Homes and people | One home and its owner. Members and roles are in the data from the start. | Invitations, roles in the app, several homes |
+| Homes and people | Several homes, their people and roles, profiles and invitations: the whole of the app API 1.1, which the owner chose to build at once (2026-11-03) | The limits on them, which the configuration sets, as use requires |
 | Sign-in | The owner's account, through the same sign-in others will use ([ai-platform ADR-0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md)) | More accounts |
 | Budget | One daily budget for the whole cloud, a guard against runaway costs | Quotas per home and per device |
 | Hosting | One host (ADR-0004) | The [growth](#growth) table |
