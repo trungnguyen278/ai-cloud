@@ -1,27 +1,49 @@
 # SPDX-License-Identifier: MIT
-"""The accounts' types and rules, without I/O (ai-platform ADR-0008, the app API 1.0).
+"""The accounts' types and rules, without I/O (ai-platform ADR-0008 and ADR-0009, the app
+API 1.1).
 
 An account is a person. The ways they sign in are its identities: a provider, and the
 provider's identifier for them (its ``sub``). A session is one app on one phone, signed
 in, and holds one refresh token at a time; the ones before it are remembered until they
 could no longer be valid, so that one presented again ends the session (RFC 9700).
+
+A home is where devices and people belong. A member is one person in one home, with a name
+that is that home's: a person with an account, who has a role, or a profile, who never
+signs in. A person joins with an invitation's code, of which the cloud keeps the hash.
 """
 
+import base64
+import binascii
 import hashlib
 import secrets
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from enum import StrEnum
+from typing import Any
 from uuid import UUID
+
+from ai_cloud.accounts.domain.errors import InvalidPageToken
 
 # Fixed by the app API (platform/protocols/app/schema.json).
 DISPLAY_NAME_MAX = 100  # $defs/display_name, maxLength
 MAX_IDENTITIES = 16  # $defs/account, identities' maxItems
 
-# Random bytes in a nonce (the app API's $defs/nonce) and in a refresh token
-# (docs/decisions/0008-data-and-tokens.md, decision 4).
+# Random bytes in a nonce (the app API's $defs/nonce), in a refresh token
+# (docs/decisions/0008-data-and-tokens.md, decision 4) and in an invitation's code (the app
+# API's $defs/invitation_code).
 NONCE_BYTES = 32
 REFRESH_TOKEN_BYTES = 32
+INVITATION_CODE_BYTES = 32
+
+
+class Role(StrEnum):
+    """What a person with an account may do in a home (ai-platform ADR-0009, decision 2)."""
+
+    OWNER = "owner"
+    ADMIN = "admin"
+    MEMBER = "member"
 
 
 @dataclass(frozen=True)
@@ -49,7 +71,7 @@ class Account:
 
     @property
     def etag(self) -> str:
-        return f'W/"{self.version}"'
+        return _etag(self.version)
 
 
 @dataclass(frozen=True)
@@ -102,10 +124,135 @@ class AccountChanges:
 
 
 @dataclass(frozen=True)
-class SessionPage:
-    sessions: tuple[Session, ...]
+class Page[T]:
+    """One page of a list."""
+
+    items: tuple[T, ...]
     # Empty on the last page.
     next_page_token: str
+
+
+@dataclass(frozen=True)
+class Home:
+    id: UUID
+    name: str
+    # An IANA time zone.
+    time_zone: str
+    # What its devices speak until their own settings say otherwise, most preferred first
+    # (ai-platform ADR-0002).
+    languages: tuple[str, ...]
+    create_time: datetime
+    # Raised by a change to the fields above, and by handing the home over: it makes the
+    # ETag.
+    version: int
+
+    @property
+    def etag(self) -> str:
+        return _etag(self.version)
+
+
+@dataclass(frozen=True)
+class NewHome:
+    """What a person gives a home they create."""
+
+    name: str
+    time_zone: str
+    languages: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class HomeChanges:
+    """What a person changes in a home; ``None`` leaves a field as it is."""
+
+    name: str | None
+    time_zone: str | None
+    languages: tuple[str, ...] | None
+
+
+@dataclass(frozen=True)
+class Member:
+    """One person in one home."""
+
+    id: UUID
+    home_id: UUID
+    # None for a profile, who never signs in.
+    account_id: UUID | None
+    # This home's name for the person. It starts as their account's, and does not follow it.
+    display_name: str
+    # None for a profile.
+    role: Role | None
+    create_time: datetime
+    # Raised by every change to the person: it makes the ETag.
+    version: int
+
+    @property
+    def etag(self) -> str:
+        return _etag(self.version)
+
+
+@dataclass(frozen=True)
+class MemberChanges:
+    """What is changed about a person in a home; ``None`` leaves a field as it is."""
+
+    display_name: str | None
+    role: Role | None
+
+
+@dataclass(frozen=True)
+class HomeView:
+    """A home, as one of its people sees it."""
+
+    home: Home
+    # The person who asks.
+    member: Member
+
+
+@dataclass(frozen=True)
+class Invitation:
+    id: UUID
+    home_id: UUID
+    # The person who made it.
+    invited_by: UUID
+    # That person's name in the home.
+    invited_by_name: str
+    create_time: datetime
+    expire_time: datetime
+    # The person it brought in; None while it is unused.
+    used_by: UUID | None
+
+
+@dataclass(frozen=True)
+class NewInvitation:
+    """An invitation just made, and its code, which is never seen again."""
+
+    invitation: Invitation
+    code: str
+
+
+@dataclass(frozen=True)
+class InvitationPreview:
+    """What a person sees of an invitation before they agree."""
+
+    home_name: str
+    invited_by: str
+    expire_time: datetime
+
+
+@dataclass(frozen=True)
+class IdempotencyKey:
+    """What makes a request's retry recognisable: the key the app gave it, and the SHA-256
+    of what the request asks."""
+
+    key: UUID
+    fingerprint: bytes
+
+
+@dataclass(frozen=True)
+class FirstAnswer:
+    """What the first request with an Idempotency-Key was answered."""
+
+    fingerprint: bytes
+    body: dict[str, Any]
 
 
 def new_nonce() -> str:
@@ -118,8 +265,14 @@ def new_refresh_token() -> str:
     return secrets.token_urlsafe(REFRESH_TOKEN_BYTES)
 
 
+def new_invitation_code() -> str:
+    """An invitation's code: random bytes, base64url without padding."""
+    return secrets.token_urlsafe(INVITATION_CODE_BYTES)
+
+
 def token_hash(token: str) -> bytes:
-    """What the cloud keeps of a refresh token: its SHA-256, never the token."""
+    """What the cloud keeps of a refresh token or an invitation's code: its SHA-256, never
+    the thing itself."""
     return hashlib.sha256(token.encode()).digest()
 
 
@@ -136,3 +289,62 @@ def display_name_for(sign_in: SignIn) -> str | None:
     if not name and sign_in.email:
         name = sign_in.email.partition("@")[0].strip()
     return name[:DISPLAY_NAME_MAX] or None
+
+
+def may_manage(member: Member) -> bool:
+    """Whether ``member`` may change the home, invite people and add profiles."""
+    return member.role in (Role.OWNER, Role.ADMIN)
+
+
+def may_change(actor: Member, target: Member) -> bool:
+    """Whether ``actor`` may rename or remove ``target``, who is someone else: the owner
+    anyone, and an admin members and profiles."""
+    match actor.role:
+        case Role.OWNER:
+            return True
+        case Role.ADMIN:
+            return target.role in (Role.MEMBER, None)
+        case _:
+            return False
+
+
+def invitation_usable(invitation: Invitation, asker: Member | None, now: datetime) -> bool:
+    """Whether a person may go on with an invitation they hold the code of. ``asker`` is
+    that person in its home, if they are in it. A code works once, but the person it
+    brought in may try it again, so that a retry after a lost answer ends in the same
+    place."""
+    if now >= invitation.expire_time:
+        return False
+    return invitation.used_by is None or (asker is not None and invitation.used_by == asker.id)
+
+
+def etag_matches(if_match: str, etag: str) -> bool:
+    """Whether ``If-Match`` names ``etag``: as written, the app API's ETags being compared
+    as the cloud gives them; ``*`` matches any."""
+    return any(candidate.strip() in ("*", etag) for candidate in if_match.split(","))
+
+
+def page_of[T](found: list[T], page_size: int, identifier: Callable[[T], UUID]) -> Page[T]:
+    """The page that ``found``, read with one item more than ``page_size``, makes."""
+    items = tuple(found[:page_size])
+    more = len(found) > page_size
+    return Page(items, _page_token(identifier(items[-1])) if more else "")
+
+
+def page_after(page_token: str | None) -> UUID | None:
+    """Where the page that ``page_token`` names starts after. ``InvalidPageToken`` for one
+    that no list gave."""
+    if not page_token:
+        return None
+    try:
+        return UUID(bytes=base64.urlsafe_b64decode(page_token + "=" * (-len(page_token) % 4)))
+    except binascii.Error, ValueError:
+        raise InvalidPageToken("the page token is not one this list gave") from None
+
+
+def _page_token(last: UUID) -> str:
+    return base64.urlsafe_b64encode(last.bytes).rstrip(b"=").decode()
+
+
+def _etag(version: int) -> str:
+    return f'W/"{version}"'

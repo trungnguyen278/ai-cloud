@@ -20,6 +20,7 @@ dependencies = [
   "pyjwt[crypto]>=2.15.1,<3",  # signing and verifying every token
   "redis>=8.1,<9",  # nonces, rate limits
   "sqlalchemy[asyncio]>=2.1.6,<2.2",  # its Core; a minor version may change behaviour
+  "tzdata>=2026.6",  # the IANA time zones a home may name, the same on every host
   "uvicorn[standard]>=0.54,<1",  # serves the api
 ]
 

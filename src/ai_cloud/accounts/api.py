@@ -18,7 +18,7 @@ from ai_cloud.accounts.db.tables import MIGRATIONS
 from ai_cloud.accounts.domain.errors import Unauthenticated
 from ai_cloud.accounts.domain.model import Principal
 from ai_cloud.accounts.routes import router
-from ai_cloud.accounts.service import AccountsService
+from ai_cloud.accounts.service import AccountsService, HomesService, SignIns
 from ai_cloud.accounts.settings import AccountsSettings
 from ai_cloud.shared.jose import SigningKeys, TokenSettings
 from ai_cloud.shared.rates import RedisRateLimiter
@@ -26,6 +26,7 @@ from ai_cloud.shared.rates import RedisRateLimiter
 __all__ = ["MIGRATIONS", "Accounts", "AccountsSettings", "Principal", "Unauthenticated"]
 
 NONCE_RATE_PREFIX = "accounts:nonce-rate:"
+INVITATION_RATE_PREFIX = "accounts:invitation-rate:"
 
 
 class Accounts:
@@ -52,17 +53,32 @@ class Accounts:
         if development is not None:
             providers.append(development.verifier)
         self.development = development is not None
+        store = PostgresStore(engine)
+        nonces = RedisNonces(redis)
+        sign_ins = SignIns(
+            nonces=nonces,
+            id_tokens=IdTokenProviders(providers),
+            recent_sign_in=settings.recent_sign_in,
+        )
         self._service = AccountsService(
             settings=settings,
             tokens=tokens,
             keys=keys,
-            store=PostgresStore(engine),
-            nonces=RedisNonces(redis),
+            store=store,
+            nonces=nonces,
             nonce_rate=RedisRateLimiter(redis, NONCE_RATE_PREFIX, settings.nonce_rate),
-            id_tokens=IdTokenProviders(providers),
+            sign_ins=sign_ins,
             development=development,
         )
-        self.router = router(self._service, development=self.development)
+        homes = HomesService(
+            settings=settings,
+            store=store,
+            sign_ins=sign_ins,
+            invitation_rate=RedisRateLimiter(
+                redis, INVITATION_RATE_PREFIX, settings.invitation_rate
+            ),
+        )
+        self.router = router(self._service, homes, development=self.development)
 
     async def authenticate(self, access_token: str) -> Principal:
         """The account and session ``access_token`` speaks for; ``Unauthenticated`` if

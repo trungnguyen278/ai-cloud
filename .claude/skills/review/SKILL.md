@@ -27,6 +27,8 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 
 - The protocol changed first, in ai-platform, and the submodule's pin moved with the code that speaks it.
 - Every message received is validated: its schema, its size, its numbers (finite), its strings (length); what fails is refused (SEC-14). Rates and sizes are limited (SEC-15).
+- Schemas are checked through `shared/protocols.py`, never a bare validator: Python's `$` also matches before a last newline, which JSON Schema's does not.
+- Text can hold a lone surrogate, which JSON's escapes can spell and no driver can store: a body read any other way than `json_body` must refuse it.
 - A replayed message has no effect beyond its first one, and credentials expire (SEC-12).
 
 ### Security and privacy
@@ -39,7 +41,7 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 ### Concurrency
 
 - Nothing blocks an event loop: file and network I/O are asynchronous, or run in a worker.
-- Transactions lock rows in one order, the one a cascade takes (an account, then its sessions, then their tokens), so that none deadlocks with a deletion. A race the code handles, such as two first sign-ins of one identity, has a test that runs it.
+- Transactions lock rows in one order, the one a cascade takes (an account, then its sessions, then their tokens; an account, then a home, then what is in it), so that none deadlocks with a deletion. A row deleted only to tidy up counts: it is held from then on, so it comes after every other lock, or goes to the `worker`. A race the code handles, such as two first sign-ins of one identity, has a test that runs it.
 - A failure in one robot's session never stops another's.
 
 ### Tests
@@ -55,7 +57,7 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 
 ## 4. Confirm, then fix
 
-For each suspicion, write the smallest script that shows it. Drop whatever does not reproduce. Fix what does in the pull request's single commit (`git commit --amend`, `git push --force-with-lease`), adding a test for it.
+For each suspicion, write the smallest script that shows it. Drop whatever does not reproduce. A search that finds nothing proves nothing until it has found a sample planted for it: a regular expression in a shell command can lose a backslash on the way. Fix what does in the pull request's single commit (`git commit --amend`, `git push --force-with-lease`), adding a test for it.
 
 ## 5. Report
 

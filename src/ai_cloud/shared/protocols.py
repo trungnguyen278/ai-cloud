@@ -9,15 +9,34 @@ be a token.
 
 import json
 import os
-from collections.abc import Mapping
+import re
+from collections.abc import Iterator, Mapping
 from functools import cache
 from pathlib import Path
 from typing import Any
 
-from jsonschema import Draft202012Validator
+from jsonschema import Draft202012Validator, validators
 from jsonschema.exceptions import SchemaError, ValidationError, best_match
 
 PLATFORM_DIR_ENV = "AI_CLOUD_PLATFORM_DIR"
+
+
+def _pattern(
+    validator: Any, pattern: str, instance: Any, _schema: Mapping[str, Any]
+) -> Iterator[ValidationError]:
+    r"""JSON Schema's ``pattern``, as it means it: a regular expression of ECMA-262, whose
+    ``$`` matches only at the very end. Python's also matches before a last newline, which
+    would let one through every pattern. Every pattern the protocols have ends with its only
+    ``$``. Classes such as ``\d`` differ too, on text beyond ASCII: the tests list the patterns
+    that use one (tests/shared/test_protocols.py)."""
+    if not validator.is_type(instance, "string"):
+        return
+    expression = pattern[:-1] + r"\Z" if pattern.endswith("$") else pattern
+    if re.search(expression, instance) is None:
+        yield ValidationError("does not match the pattern")
+
+
+_Validator = validators.extend(Draft202012Validator, {"pattern": _pattern})
 
 
 def platform_dir() -> Path:
@@ -34,10 +53,10 @@ class Schema:
     def __init__(self, name: str, schema: Mapping[str, Any]) -> None:
         self.name = name
         try:
-            Draft202012Validator.check_schema(schema)
+            _Validator.check_schema(schema)
         except SchemaError as error:
             raise ValueError(f"{name} is not a valid JSON Schema: {error.message}") from None
-        self._validator = Draft202012Validator(schema)
+        self._validator = _Validator(schema)
 
     def problem(self, instance: Any) -> str | None:
         """What is wrong with ``instance``, or ``None`` if it matches."""
@@ -45,9 +64,11 @@ class Schema:
         return None if error is None else _describe(error)
 
 
+@cache
 def protocol_schema(protocol: str, definition: str) -> Schema:
     """``definition`` of ``protocol``'s schema, as ``platform/protocols/<protocol>/schema.json``
-    has it; ``ValueError`` if it cannot be read."""
+    has it; ``ValueError`` if it cannot be read. One is made for each definition, for it takes
+    checking the whole schema against JSON Schema's own."""
     schema = _read(protocol)
     if definition not in schema.get("$defs", {}):
         raise ValueError(f"the {protocol} protocol's schema has no {definition}")

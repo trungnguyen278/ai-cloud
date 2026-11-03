@@ -64,8 +64,8 @@ issuer = "ai-cloud"
 leeway = 30
 
 [accounts]
-# Signing in, and the account (ai-platform's app API: platform/protocols/app/README.md,
-# whose Settings these are).
+# Signing in, the account, and homes (ai-platform's app API:
+# platform/protocols/app/README.md, whose Settings these are).
 #
 # The OAuth client IDs of the apps that may sign in.
 client_ids = ["ai-app"]
@@ -75,8 +75,24 @@ nonce_lifetime = 300
 access_lifetime = 600
 # Seconds a session lasts unused: 90 days.
 refresh_idle = 7_776_000
-# Seconds since it was issued within which an ID token may delete its account.
+# Seconds since it was issued within which an ID token may delete its account or a home,
+# or hand a home over.
 recent_sign_in = 300
+# Seconds a retry with an Idempotency-Key gets the first answer: 24 hours.
+idempotency_retention = 86_400
+# How many homes an account may be in: as in Google Home.
+homes_per_account = 5
+# How many people a home may have, profiles included.
+members_per_home = 30
+# Seconds an invitation's code is valid: 3 days.
+invitation_lifetime = 259_200
+# How many open invitations a home may have.
+invitations_per_home = 10
+
+[accounts.invitation_rate]
+# How many invitation codes one account may try: 10 a minute.
+limit = 10
+period = 60
 
 [accounts.nonce_rate]
 # How many nonces one address gets: 10 a minute.

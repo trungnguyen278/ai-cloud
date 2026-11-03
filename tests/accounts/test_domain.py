@@ -1,16 +1,27 @@
 # SPDX-License-Identifier: MIT
 import re
-from datetime import UTC, datetime
+import uuid
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from ai_cloud.accounts.domain.errors import InvalidPageToken
 from ai_cloud.accounts.domain.model import (
     DISPLAY_NAME_MAX,
+    Invitation,
+    Member,
+    Role,
     SignIn,
     display_name_for,
     has_control_characters,
+    invitation_usable,
+    may_change,
+    may_manage,
+    new_invitation_code,
     new_nonce,
     new_refresh_token,
+    page_after,
+    page_of,
     token_hash,
 )
 from ai_cloud.shared.protocols import protocol_schema
@@ -58,3 +69,89 @@ def test_a_refresh_token_is_kept_as_its_sha256() -> None:
     assert token_hash(token) == token_hash(token)
     assert len(token_hash(token)) == 32
     assert token_hash(token) != token_hash(new_refresh_token())
+
+
+def test_an_invitation_code_is_what_the_app_api_says() -> None:
+    codes = {new_invitation_code() for _ in range(100)}
+    assert len(codes) == 100
+    schema = protocol_schema("app", "invitation_code")
+    assert all(schema.problem(code) is None for code in codes)
+
+
+def member(role: Role | None) -> Member:
+    account = None if role is None else uuid.uuid7()
+    return Member(uuid.uuid7(), uuid.uuid7(), account, "Linh", role, datetime.now(UTC), 1)
+
+
+@pytest.mark.parametrize(
+    ("role", "allowed"),
+    [(Role.OWNER, True), (Role.ADMIN, True), (Role.MEMBER, False), (None, False)],
+)
+def test_who_manages_a_home(role: Role | None, allowed: bool) -> None:
+    assert may_manage(member(role)) is allowed
+
+
+@pytest.mark.parametrize(
+    ("actor", "target", "allowed"),
+    [
+        (Role.OWNER, Role.ADMIN, True),
+        (Role.OWNER, Role.MEMBER, True),
+        (Role.OWNER, None, True),
+        (Role.ADMIN, Role.OWNER, False),
+        (Role.ADMIN, Role.ADMIN, False),
+        (Role.ADMIN, Role.MEMBER, True),
+        (Role.ADMIN, None, True),
+        (Role.MEMBER, Role.OWNER, False),
+        (Role.MEMBER, Role.ADMIN, False),
+        (Role.MEMBER, Role.MEMBER, False),
+        (Role.MEMBER, None, False),
+    ],
+)
+def test_who_changes_whom(actor: Role, target: Role | None, allowed: bool) -> None:
+    assert may_change(member(actor), member(target)) is allowed
+
+
+def invitation(expire_time: datetime, used_by: uuid.UUID | None = None) -> Invitation:
+    return Invitation(
+        uuid.uuid7(),
+        uuid.uuid7(),
+        uuid.uuid7(),
+        "Linh",
+        expire_time - timedelta(days=3),
+        expire_time,
+        used_by,
+    )
+
+
+def test_a_code_expires_at_its_expire_time() -> None:
+    moment = datetime.now(UTC)
+    assert invitation_usable(invitation(moment + timedelta(seconds=1)), None, moment)
+    assert not invitation_usable(invitation(moment), None, moment)
+
+
+def test_a_used_code_works_only_for_the_person_it_brought_in() -> None:
+    moment = datetime.now(UTC)
+    asker = member(Role.MEMBER)
+    later = moment + timedelta(days=1)
+    assert invitation_usable(invitation(later, asker.id), asker, moment)
+    assert not invitation_usable(invitation(later, uuid.uuid7()), asker, moment)
+    assert not invitation_usable(invitation(later, asker.id), None, moment)
+    assert not invitation_usable(invitation(moment, asker.id), asker, moment)
+
+
+def test_pages() -> None:
+    items = [uuid.uuid7() for _ in range(3)]
+    first = page_of(items, 2, lambda item: item)
+    assert first.items == tuple(items[:2])
+    assert page_after(first.next_page_token) == items[1]
+    last = page_of(items[2:], 2, lambda item: item)
+    assert last.items == (items[2],)
+    assert last.next_page_token == ""
+    assert page_after(None) is None
+    assert page_after("") is None
+
+
+@pytest.mark.parametrize("token", ["*", "abc", "AAAA"])
+def test_a_page_token_no_list_gave_is_refused(token: str) -> None:
+    with pytest.raises(InvalidPageToken):
+        page_after(token)
