@@ -21,18 +21,24 @@ from jsonschema.exceptions import SchemaError, ValidationError, best_match
 PLATFORM_DIR_ENV = "AI_CLOUD_PLATFORM_DIR"
 
 
+def ecma_end(pattern: str) -> str:
+    r"""``pattern`` for Python's ``re``, whose ``$`` also matches before a last newline:
+    JSON Schema's patterns are ECMA-262's, whose ``$`` matches at the very end only, as
+    Python's ``\Z`` does. Only a ``$`` that ends the pattern, unescaped, is an anchor here;
+    the protocols' patterns have no other. Classes such as ``\d`` differ too, on text beyond
+    ASCII: the tests list the patterns that use one (tests/shared/test_protocols.py)."""
+    body = pattern.removesuffix("$")
+    if body == pattern:
+        return pattern
+    backslashes = len(body) - len(body.rstrip("\\"))
+    return pattern if backslashes % 2 else body + r"\Z"
+
+
 def _pattern(
     validator: Any, pattern: str, instance: Any, _schema: Mapping[str, Any]
 ) -> Iterator[ValidationError]:
-    r"""JSON Schema's ``pattern``, as it means it: a regular expression of ECMA-262, whose
-    ``$`` matches only at the very end. Python's also matches before a last newline, which
-    would let one through every pattern. Every pattern the protocols have ends with its only
-    ``$``. Classes such as ``\d`` differ too, on text beyond ASCII: the tests list the patterns
-    that use one (tests/shared/test_protocols.py)."""
-    if not validator.is_type(instance, "string"):
-        return
-    expression = pattern[:-1] + r"\Z" if pattern.endswith("$") else pattern
-    if re.search(expression, instance) is None:
+    """JSON Schema's ``pattern``, with its end read as ECMA-262 reads it."""
+    if validator.is_type(instance, "string") and not re.search(ecma_end(pattern), instance):
         yield ValidationError("does not match the pattern")
 
 
