@@ -26,7 +26,8 @@ def ecma_end(pattern: str) -> str:
     JSON Schema's patterns are ECMA-262's, whose ``$`` matches at the very end only, as
     Python's ``\Z`` does. Only a ``$`` that ends the pattern, unescaped, is an anchor here;
     the protocols' patterns have no other. Classes such as ``\d`` differ too, on text beyond
-    ASCII: the tests list the patterns that use one (tests/shared/test_protocols.py)."""
+    ASCII: ai-platform's ADR-0010 keeps them out of the protocols' patterns, and the tests
+    check it (tests/shared/test_protocols.py)."""
     body = pattern.removesuffix("$")
     if body == pattern:
         return pattern

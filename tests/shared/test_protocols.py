@@ -114,26 +114,21 @@ def _patterns(schema: Any) -> Iterator[str]:
 # against Node 24 on 2026-11-03: Python's \d and \w take in every script's digits and letters,
 # and its \s takes U+001C to U+001F and U+0085 where ECMA-262's takes U+FEFF.
 _SHORTHANDS = re.compile(r"\\[dDwWsSbB]")
-# The patterns that use one all the same. The email's \s: the two disagree only on those six
-# characters, which have no place in an address. ai-platform should spell it out.
-_KNOWN = {"^[^@\\s]+@[^@\\s]+$"}
 
 
 def test_every_pattern_reads_alike_in_python_and_ecma_262() -> None:
-    """What ``protocols._pattern`` counts on: each pattern's only ``$`` ends it, and none but
-    those known uses a class whose meaning differs between the two."""
+    """What ``protocols.ecma_end`` counts on, and ai-platform's ADR-0010 promises: each
+    pattern's only ``$`` ends it, and none uses a class whose meaning differs between the
+    two."""
     schemas = sorted(platform_dir().glob("*/schema.json"))
     assert schemas
     found = 0
-    shorthands: set[str] = set()
     for path in schemas:
         for pattern in _patterns(json.loads(path.read_text(encoding="utf-8"))):
             found += 1
             assert "$" not in pattern[:-1], (path, pattern)
-            if _SHORTHANDS.search(pattern):
-                shorthands.add(pattern)
+            assert _SHORTHANDS.search(pattern) is None, (path, pattern)
     assert found > 0
-    assert shorthands == _KNOWN
 
 
 @pytest.mark.parametrize("pattern", [r"^\d+$", r"^\w$", r"a\sb", r"\bx"])
