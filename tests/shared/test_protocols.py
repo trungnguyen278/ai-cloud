@@ -8,7 +8,13 @@ from typing import Any
 import pytest
 
 from ai_cloud.shared import protocols
-from ai_cloud.shared.protocols import PLATFORM_DIR_ENV, platform_dir, protocol_schema
+from ai_cloud.shared.protocols import (
+    PLATFORM_DIR_ENV,
+    Schema,
+    ecma_end,
+    platform_dir,
+    protocol_schema,
+)
 
 TOKEN = "eyJ" + "s3cr3t" * 2000
 
@@ -67,6 +73,25 @@ def test_a_pattern_s_end_is_the_very_end(definition: str, good: str) -> None:
     schema = protocol_schema("app", definition)
     assert schema.problem(good) is None
     assert "breaks pattern" in str(schema.problem(good + "\n"))
+
+
+@pytest.mark.parametrize(
+    ("pattern", "python"),
+    [
+        ("^[a-z]+$", r"^[a-z]+\Z"),
+        ("^a", "^a"),
+        (r"^cost\$", r"^cost\$"),  # an escaped dollar is a dollar
+        (r"^a\\$", r"^a\\\Z"),  # an escaped backslash, then the end
+    ],
+)
+def test_a_pattern_ends_where_ecma_262_ends_it(pattern: str, python: str) -> None:
+    assert ecma_end(pattern) == python
+
+
+def test_an_escaped_dollar_is_a_dollar() -> None:
+    schema = Schema("test", {"type": "string", "pattern": r"^cost\$"})
+    assert schema.problem("cost$") is None
+    assert schema.problem("cost") is not None
 
 
 def test_a_pattern_is_only_for_text() -> None:
