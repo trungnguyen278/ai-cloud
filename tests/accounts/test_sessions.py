@@ -9,6 +9,7 @@ import uuid
 import pytest
 from app_api import CLIENT, bearer, conforms, oauth_error, problem
 
+from ai_cloud.accounts.domain.model import token_hash
 from ai_cloud.accounts.service import ACCESS_TOKEN_TYPE, APP_AUDIENCE
 
 pytestmark = pytest.mark.anyio
@@ -32,26 +33,83 @@ async def test_a_refresh_token_works_once(cloud) -> None:
     assert len(sessions.json()["sessions"]) == 1
 
 
-async def test_a_refresh_token_presented_twice_ends_its_session(cloud) -> None:
+async def test_a_refresh_token_presented_after_its_replacement_was_used_ends_its_session(
+    cloud,
+) -> None:
     first = await cloud.sign_in()
     second = conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    third = conforms(await cloud.refresh(second["refresh_token"]), "token_response")
     replayed = await cloud.refresh(first["refresh_token"])
     assert "twice" in oauth_error(replayed, "invalid_grant")
-    # Neither copy works any more: the session has ended, at once.
-    oauth_error(await cloud.refresh(second["refresh_token"]), "invalid_grant")
-    response = await cloud.http.get("/app/v1/account", headers=bearer(second))
+    # No copy works any more: the session has ended, at once.
+    oauth_error(await cloud.refresh(third["refresh_token"]), "invalid_grant")
+    response = await cloud.http.get("/app/v1/account", headers=bearer(third))
     problem(response, 401)
     assert response.headers["www-authenticate"] == CHALLENGE
 
 
-async def test_two_refreshes_with_one_token_end_the_session(cloud) -> None:
+async def test_a_refresh_token_refreshes_again_after_a_lost_answer(cloud) -> None:
+    first = await cloud.sign_in()
+    lost = conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    again = conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    assert again["refresh_token"] not in (first["refresh_token"], lost["refresh_token"])
+    assert (await cloud.account(again))["id"] == (await cloud.account(first))["id"]
+    [[replaces]] = await cloud.sql(
+        "SELECT replaces FROM accounts.refresh_tokens WHERE use_time IS NULL"
+    )
+    assert replaces == token_hash(first["refresh_token"])
+    # The session goes on, with the token of the answer that arrived.
+    conforms(await cloud.refresh(again["refresh_token"]), "token_response")
+
+
+async def test_a_retry_may_come_more_than_once_within_refresh_reuse(cloud) -> None:
+    first = await cloud.sign_in()
+    for _ in range(3):
+        last = conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    conforms(await cloud.refresh(last["refresh_token"]), "token_response")
+
+
+async def test_the_token_of_a_lost_answer_works_no_more_and_ends_the_session(cloud) -> None:
+    first = await cloud.sign_in()
+    lost = conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    again = conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    # Whoever holds it, the app or a thief, the session ends, so that no copy works.
+    assert "twice" in oauth_error(await cloud.refresh(lost["refresh_token"]), "invalid_grant")
+    oauth_error(await cloud.refresh(again["refresh_token"]), "invalid_grant")
+
+
+async def test_a_refresh_token_presented_after_refresh_reuse_ends_its_session(cloud) -> None:
+    first = await cloud.sign_in()
+    second = conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    await cloud.sql(
+        "UPDATE accounts.refresh_tokens SET use_time = use_time - make_interval(secs => :s)"
+        " WHERE use_time IS NOT NULL",
+        s=cloud.settings.accounts.refresh_reuse + 1,
+    )
+    assert "twice" in oauth_error(await cloud.refresh(first["refresh_token"]), "invalid_grant")
+    oauth_error(await cloud.refresh(second["refresh_token"]), "invalid_grant")
+
+
+async def test_no_retry_when_refresh_reuse_is_zero(make_cloud) -> None:
+    cloud = await make_cloud(accounts={"refresh_reuse": 0})
+    first = await cloud.sign_in()
+    conforms(await cloud.refresh(first["refresh_token"]), "token_response")
+    assert "twice" in oauth_error(await cloud.refresh(first["refresh_token"]), "invalid_grant")
+
+
+async def test_two_refreshes_with_one_token_leave_one_that_works(cloud) -> None:
     tokens = await cloud.sign_in()
     answers = await asyncio.gather(
         cloud.refresh(tokens["refresh_token"]), cloud.refresh(tokens["refresh_token"])
     )
-    assert sorted(answer.status_code for answer in answers) == [200, 400]
-    [granted] = [answer.json() for answer in answers if answer.status_code == 200]
-    oauth_error(await cloud.refresh(granted["refresh_token"]), "invalid_grant")
+    # The second waits for the first, and is taken for a retry after a lost answer.
+    assert [answer.status_code for answer in answers] == [200, 200]
+    [[current]] = await cloud.sql("SELECT hash FROM accounts.refresh_tokens WHERE use_time IS NULL")
+    given = [answer.json()["refresh_token"] for answer in answers]
+    [kept] = [token for token in given if token_hash(token) == current]
+    [replaced] = [token for token in given if token != kept]
+    oauth_error(await cloud.refresh(replaced), "invalid_grant")
+    oauth_error(await cloud.refresh(kept), "invalid_grant")
 
 
 async def test_an_unknown_refresh_token_is_refused(cloud) -> None:

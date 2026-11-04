@@ -75,6 +75,10 @@ nonce_lifetime = 300
 access_lifetime = 600
 # Seconds a session lasts unused: 90 days.
 refresh_idle = 7_776_000
+# Seconds after its first use within which a refresh token refreshes again, while the token
+# that replaced it is unused: a retry after an answer lost on the way (ai-platform ADR-0011),
+# as long as Okta's longest grace period.
+refresh_reuse = 60
 # Seconds since it was issued within which an ID token may delete its account or a home,
 # or hand a home over.
 recent_sign_in = 300

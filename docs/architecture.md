@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process, and the `accounts` module, which serves the app API 1.1, but for Apple and the page that an invitation's link opens.
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process, and the `accounts` module, which serves the app API 1.3, but for Apple and the page that an invitation's link opens.
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -127,7 +127,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 | With | How |
 |---|---|
 | Devices | The cloud link: a control channel always on (a WebSocket), and a LiveKit room to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)) |
-| The app | The app API over HTTPS (`platform/protocols/app/`; 1.1 signs people in and keeps their homes), and push |
+| The app | The app API over HTTPS (`platform/protocols/app/`; 1.3 signs people in and keeps their homes), and push |
 | Set-up | The registration that the app relays (the set-up protocol) |
 
 ## Security

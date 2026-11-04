@@ -81,11 +81,29 @@ class Transaction(Protocol):
 
     async def session(self, session_id: UUID, *, lock: bool) -> Session | None: ...
 
+    async def may_refresh_again(
+        self, session_id: UUID, refresh_hash: bytes, since: datetime
+    ) -> bool:
+        """Whether the session's current refresh token replaced this used one, first used
+        at ``since`` or after: the answer that gave the current one was lost, and this one
+        refreshes again (ai-platform ADR-0011)."""
+        ...
+
+    async def supersede_current_refresh_token(self, session_id: UUID, now: datetime) -> None:
+        """Mark the session's current refresh token used, as if exchanged at ``now``: it
+        works no more, and one presented again ends the session."""
+        ...
+
     async def continue_session(
-        self, session_id: UUID, refresh_hash: bytes, now: datetime, forget_before: datetime
+        self,
+        session_id: UUID,
+        refresh_hash: bytes,
+        now: datetime,
+        forget_before: datetime,
+        replaces: bytes,
     ) -> None:
-        """Give the session its next refresh token, note its use, and forget the tokens
-        it used before ``forget_before``."""
+        """Give the session its next refresh token, which replaces ``replaces``, note its
+        use, and forget the tokens it used before ``forget_before``."""
         ...
 
     async def end_session(self, session_id: UUID, *, account_id: UUID | None) -> bool:

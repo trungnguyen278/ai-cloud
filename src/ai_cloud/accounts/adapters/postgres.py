@@ -193,10 +193,45 @@ class PostgresTransaction:
         row = (await self._db.execute(query.with_for_update() if lock else query)).one_or_none()
         return None if row is None else _session(row)
 
+    async def may_refresh_again(
+        self, session_id: UUID, refresh_hash: bytes, since: datetime
+    ) -> bool:
+        presented = (
+            await self._db.execute(
+                select(refresh_tokens.c.use_time).where(
+                    refresh_tokens.c.hash == refresh_hash,
+                    refresh_tokens.c.session_id == session_id,
+                )
+            )
+        ).scalar_one_or_none()
+        if presented is None or presented < since:
+            return False
+        replaced = (
+            await self._db.execute(
+                select(refresh_tokens.c.replaces).where(
+                    refresh_tokens.c.session_id == session_id,
+                    refresh_tokens.c.use_time.is_(None),
+                )
+            )
+        ).scalar_one_or_none()
+        return replaced == refresh_hash
+
+    async def supersede_current_refresh_token(self, session_id: UUID, now: datetime) -> None:
+        await self._db.execute(
+            update(refresh_tokens)
+            .where(refresh_tokens.c.session_id == session_id, refresh_tokens.c.use_time.is_(None))
+            .values(use_time=now)
+        )
+
     async def continue_session(
-        self, session_id: UUID, refresh_hash: bytes, now: datetime, forget_before: datetime
+        self,
+        session_id: UUID,
+        refresh_hash: bytes,
+        now: datetime,
+        forget_before: datetime,
+        replaces: bytes,
     ) -> None:
-        await self._add_refresh_token(session_id, refresh_hash, now)
+        await self._add_refresh_token(session_id, refresh_hash, now, replaces=replaces)
         await self._db.execute(
             update(sessions).where(sessions.c.id == session_id).values(last_use_time=now)
         )
@@ -234,10 +269,12 @@ class PostgresTransaction:
         return [_session(row) for row in await self._db.execute(query)]
 
     async def _add_refresh_token(
-        self, session_id: UUID, refresh_hash: bytes, now: datetime
+        self, session_id: UUID, refresh_hash: bytes, now: datetime, replaces: bytes | None = None
     ) -> None:
         await self._db.execute(
-            insert(refresh_tokens).values(hash=refresh_hash, session_id=session_id, create_time=now)
+            insert(refresh_tokens).values(
+                hash=refresh_hash, session_id=session_id, create_time=now, replaces=replaces
+            )
         )
 
     # Homes.
