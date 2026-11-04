@@ -88,6 +88,9 @@ refresh_tokens = Table(
     Column("create_time", DateTime(timezone=True), nullable=False),
     # When it was exchanged for the next one; none while it is its session's current one.
     Column("use_time", DateTime(timezone=True)),
+    # The hash of the token it replaced; none for a session's first. That token refreshes
+    # again for a while, as a retry after a lost answer (ai-platform ADR-0011).
+    Column("replaces", LargeBinary),
     Index("ix_refresh_tokens_session_id", "session_id"),
     # A session has one current refresh token at most.
     Index(

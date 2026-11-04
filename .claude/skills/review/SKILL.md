@@ -30,6 +30,7 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - Schemas are checked through `shared/protocols.py`, never a bare validator: Python's `$` also matches before a last newline, which JSON Schema's does not.
 - Text can hold a lone surrogate, which JSON's escapes can spell and no driver can store: a body read any other way than `json_body` must refuse it.
 - A replayed message has no effect beyond its first one, and credentials expire (SEC-12).
+- A credential that may be presented again, such as a refresh token retried after a lost answer, still gives theft away: what it replaces stops working, and that one presented again ends the session. Deleting it instead would turn the thief's next step into a plain refusal.
 
 ### Security and privacy
 

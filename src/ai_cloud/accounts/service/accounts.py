@@ -78,6 +78,7 @@ class AccountsService:
         self._sign_ins = sign_ins
         self._development = development
         self._idle = timedelta(seconds=settings.refresh_idle)
+        self._reuse = timedelta(seconds=settings.refresh_reuse)
         self._email_schema = protocol_schema("app", "email")
 
     # Signing in.
@@ -154,8 +155,10 @@ class AccountsService:
         return self._tokens_for(session, refresh_token)
 
     async def refresh(self, refresh_token: str, client_id: str) -> Tokens:
-        """The next tokens of a session. A refresh token works once: one presented again
-        ends its session (RFC 9700, 4.14.2)."""
+        """The next tokens of a session. A refresh token works once (RFC 9700, 4.14.2), but
+        for a retry after a lost answer: for ``refresh_reuse`` after its first use, while the
+        token that replaced it is unused, it refreshes again, and that token stops working
+        (ai-platform ADR-0011). Any other presented again ends its session."""
         self._check_client(client_id)
         presented = token_hash(refresh_token)
         moment = now()
@@ -170,16 +173,27 @@ class AccountsService:
                 raise InvalidGrant("unknown refresh token")
             if session.client_id != client_id:
                 raise InvalidGrant("the refresh token was issued to another client")
-            if not await store.use_refresh_token(presented, moment):
+            fresh = await store.use_refresh_token(presented, moment)
+            retried = not fresh and await store.may_refresh_again(
+                session.id, presented, since=moment - self._reuse
+            )
+            if not fresh and not retried:
                 await store.end_session(session.id, account_id=None)
                 ended = "refresh token used twice: the session has ended"
             elif session.last_use_time <= moment - self._idle:
                 await store.end_session(session.id, account_id=None)
                 ended = "the session was left unused too long"
             else:
+                if retried:
+                    # The answer that gave the current token was lost: it works no more.
+                    await store.supersede_current_refresh_token(session.id, moment)
                 next_token = new_refresh_token()
                 await store.continue_session(
-                    session.id, token_hash(next_token), moment, forget_before=moment - self._idle
+                    session.id,
+                    token_hash(next_token),
+                    moment,
+                    forget_before=moment - self._idle,
+                    replaces=presented,
                 )
         if ended is not None:
             log.warning(
@@ -187,6 +201,10 @@ class AccountsService:
                 extra={"session": str(session.id), "reason": ended},
             )
             raise InvalidGrant(ended)
+        if retried:
+            log.info(
+                "a refresh was sent again, its answer lost", extra={"session": str(session.id)}
+            )
         return self._tokens_for(session, next_token)
 
     async def revoke(self, token: str, token_type_hint: str | None, client_id: str) -> None:

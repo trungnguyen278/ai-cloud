@@ -87,7 +87,7 @@ def test_every_module_migrates_to_what_its_tables_declare(
     ]
     assert differences == []
     # Its version table is in its own schema, and holds its branch alone.
-    assert versions == ["accounts_0002"]
+    assert versions == ["accounts_0003"]
     assert (
         _on(
             fresh,
@@ -113,9 +113,9 @@ def test_a_revision_is_written_from_what_the_tables_lack(
     module = replace(ACCOUNTS, metadata=tables, directory=directory)
     written = asyncio.run(revise(fresh, settings, module, "Add pronouns", modules=[module]))
     assert written.parent == directory
-    assert written.name.startswith("accounts_0003_")
+    assert written.name.startswith("accounts_0004_")
     source = written.read_text(encoding="utf-8")
     assert source.startswith("# SPDX-License-Identifier: MIT\n")
-    assert "revision = 'accounts_0003'" in source
-    assert "down_revision = 'accounts_0002'" in source
+    assert "revision = 'accounts_0004'" in source
+    assert "down_revision = 'accounts_0003'" in source
     assert "op.add_column('accounts', sa.Column('pronouns'" in source

@@ -44,6 +44,9 @@ class AccountsSettings(Settings):
     access_lifetime: Annotated[int, Field(ge=1, le=_TOKEN_RESPONSE_MAX)]
     # Seconds a session lasts unused (refresh_idle).
     refresh_idle: Annotated[int, Field(ge=1)]
+    # Seconds after its first use within which a refresh token refreshes again, while its
+    # replacement is unused (refresh_reuse): 0 allows no retry.
+    refresh_reuse: Annotated[int, Field(ge=0)]
     # Seconds since it was issued within which an ID token may delete its account or a
     # home, or hand a home over (recent_sign_in).
     recent_sign_in: Annotated[int, Field(ge=1)]
