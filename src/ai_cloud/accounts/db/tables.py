@@ -22,6 +22,7 @@ from sqlalchemy import (
 )
 
 from ai_cloud.shared.database import Migrations, metadata
+from ai_cloud.shared.events import Outbox
 
 SCHEMA = "accounts"
 
@@ -166,6 +167,10 @@ idempotency_keys = Table(
     Column("answer", JSON, nullable=False),
     Column("create_time", DateTime(timezone=True), nullable=False),
 )
+
+# The events the accounts write, each in the transaction of its change, until the worker has
+# relayed them and their retention is past (docs/decisions/0009-domain-events.md).
+OUTBOX = Outbox(tables)
 
 MIGRATIONS = Migrations(
     schema=SCHEMA, metadata=tables, directory=Path(__file__).parent / "migrations"

@@ -1,23 +1,31 @@
 # SPDX-License-Identifier: MIT
+import asyncio
 import json
 import os
 import shutil
+import signal
 import socket
 import subprocess
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx2
 import pytest
+import redis
+from sqlalchemy import text
 
 from ai_cloud import software_version
 from ai_cloud.__main__ import ENVIRONMENT_ENV, main
-from ai_cloud.entry import api, migrate
+from ai_cloud.accounts.api import OUTBOX, HomeDeleted
+from ai_cloud.entry import api, migrate, worker
 from ai_cloud.entry.settings import ApiSettings
+from ai_cloud.entry.worker import WorkerSecrets
 from ai_cloud.shared.config import default_config_dir
+from ai_cloud.shared.database import create_engine
 from ai_cloud.shared.jose import SigningKeys
 
 STARTUP = 20.0  # seconds a process may take to answer, on a slow CI machine
@@ -68,6 +76,14 @@ def migrated(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
 
     monkeypatch.setattr(migrate, "migrate", run)
     monkeypatch.setattr(migrate, "revise", revise)
+    return calls
+
+
+@pytest.fixture(autouse=True)
+def worked(monkeypatch: pytest.MonkeyPatch) -> list[WorkerSecrets]:
+    """What the worker would have worked with. Nothing works in the tests' own process."""
+    calls: list[WorkerSecrets] = []
+    monkeypatch.setattr(worker, "run", lambda _settings, secrets: calls.append(secrets))
     return calls
 
 
@@ -137,6 +153,19 @@ def test_migrate_needs_the_database_only(
         ("revise", DATABASE, "accounts", "Add a column"),
     ]
     assert capsys.readouterr().out.strip() == "written.py"
+
+
+def test_the_worker_needs_the_database_and_redis_only(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    worked: list[WorkerSecrets],
+) -> None:
+    for name, value in (("AI_CLOUD_DATABASE_URL", DATABASE), ("AI_CLOUD_REDIS_URL", REDIS)):
+        assert main(["worker", "--environment", "development"]) == 2
+        assert name in capsys.readouterr().err
+        monkeypatch.setenv(name, value)
+    assert main(["worker", "--environment", "development"]) == 0
+    assert worked == [WorkerSecrets(DATABASE, REDIS)]
 
 
 @pytest.mark.parametrize(
@@ -233,3 +262,57 @@ def test_the_api_process_serves_and_logs(config_dir: Path, secrets: dict[str, st
     [access] = [entry for entry in entries if entry["logger"] == "uvicorn.access"]
     assert '"GET /health HTTP/1.1" 200' in access["message"]
     assert not [entry for entry in entries if "color_message" in entry]
+
+
+async def _write_and_forget(url: str, settings: Any, home_id: uuid.UUID | None) -> None:
+    """Write an event to the accounts' outbox, or, for ``None``, empty it."""
+    engine = create_engine(url, settings, "ai-cloud tests")
+    try:
+        async with engine.begin() as connection:
+            if home_id is None:
+                await connection.execute(text("TRUNCATE accounts.outbox"))
+            else:
+                await OUTBOX.write(connection, HomeDeleted(home_id))
+    finally:
+        await engine.dispose()
+
+
+def test_the_worker_process_relays_until_it_is_told_to_stop(
+    config_dir: Path, postgres_url: str, redis_url: str, make_settings: Any
+) -> None:
+    (config_dir / "local.toml").write_text('[logging]\nformat = "json"\n', encoding="utf-8")
+    command = [sys.executable, "-m", "ai_cloud", "worker", "--environment", "development"]
+    # Windows sends no SIGTERM, but Ctrl+Break, to a process group of the child's own.
+    windows = sys.platform == "win32"
+    process = subprocess.Popen(
+        [*command, "--config-dir", str(config_dir)],
+        env={**os.environ, "AI_CLOUD_DATABASE_URL": postgres_url, "AI_CLOUD_REDIS_URL": redis_url},
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if windows else 0,
+    )
+    database = make_settings().database
+    client = redis.Redis.from_url(redis_url)
+    try:
+        asyncio.run(_write_and_forget(postgres_url, database, uuid.uuid7()))
+        deadline = time.monotonic() + STARTUP
+        while not client.xlen(OUTBOX.stream):
+            assert process.poll() is None, "the process stopped"
+            assert time.monotonic() < deadline, "the event was never relayed"
+            time.sleep(0.05)
+        process.send_signal(signal.CTRL_BREAK_EVENT if windows else signal.SIGTERM)
+        _, errors = process.communicate(timeout=STARTUP)
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.communicate()
+        client.close()
+        asyncio.run(_write_and_forget(postgres_url, database, None))
+    assert process.returncode == 0, errors
+    messages = [json.loads(line)["message"] for line in errors.splitlines()]
+    assert messages == [
+        "starting the worker process",
+        "the worker process stops",
+        "the worker process has stopped",
+    ]

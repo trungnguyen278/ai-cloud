@@ -45,6 +45,16 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - Transactions lock rows in one order, the one a cascade takes (an account, then its sessions, then their tokens; an account, then a home, then what is in it), so that none deadlocks with a deletion. A row deleted only to tidy up counts: it is held from then on, so it comes after every other lock, or goes to the `worker`. A race the code handles, such as two first sign-ins of one identity, has a test that runs it.
 - A failure in one robot's session never stops another's.
 
+### Domain events (docs/decisions/0009-domain-events.md)
+
+- A change that other modules must learn of writes its event through its module's `emit`, in the change's own transaction, under the lock of the thing it is about, so that their order holds. A test shows that a change that fails writes no event.
+- An event's data holds identifiers: never personal data, a secret or content, which would outlive the deletion it reports, for the retention.
+- A handler is idempotent, and works in any order: a test gives it the same event twice.
+- What goes to Redis, or another store, as JSON is ASCII, as `json.dumps` writes it by default: a lone surrogate, which a `json` column takes as an escape, cannot be encoded as UTF-8, and would hold up every event behind it.
+- A blocking read, such as Redis's `BLOCK`, ends before the client's own timeout, which would cut it short as if the server had failed: the configuration checks it.
+- Work that several workers may do on the same rows at once, such as a sweep, first takes its turn, under a transaction-level advisory lock.
+- A check that compares two stores, such as a stream's last place with its outbox's, runs under the lock of the change that could hide the difference, and before that change: a check after the outbox gave new places missed a restored outbox, and lost its events.
+
 ### Tests
 
 - Each behaviour change has a test that would fail on the old code; check it is not vacuous (an exact float compare that never matches, a loop that never runs).

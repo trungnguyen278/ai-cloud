@@ -14,6 +14,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from ai_cloud.accounts.db.tables import (
+    OUTBOX,
     accounts,
     homes,
     idempotency_keys,
@@ -24,6 +25,7 @@ from ai_cloud.accounts.db.tables import (
     sessions,
 )
 from ai_cloud.accounts.domain.errors import IdentityConflict
+from ai_cloud.accounts.domain.events import AccountsEvent
 from ai_cloud.accounts.domain.model import (
     Account,
     FirstAnswer,
@@ -63,6 +65,9 @@ class PostgresStore:
 class PostgresTransaction:
     def __init__(self, connection: AsyncConnection) -> None:
         self._db = connection
+
+    async def emit(self, event: AccountsEvent) -> None:
+        await OUTBOX.write(self._db, event)
 
     async def identity(self, provider: str, subject: str) -> IdentityOwner | None:
         row = (

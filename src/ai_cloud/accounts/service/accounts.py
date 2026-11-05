@@ -22,6 +22,7 @@ from ai_cloud.accounts.domain.errors import (
     TooManyIdentities,
     Unauthenticated,
 )
+from ai_cloud.accounts.domain.events import AccountDeleted
 from ai_cloud.accounts.domain.model import (
     MAX_IDENTITIES,
     Account,
@@ -288,6 +289,7 @@ class AccountsService:
             check_signs_in_to(account, sign_in)
             await remove_from_homes(store, account.id)
             await store.delete_account(account.id)
+            await store.emit(AccountDeleted(account.id))
         log.info("account deleted", extra={"account": str(account.id)})
 
     # Identities.

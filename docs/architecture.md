@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process, and the `accounts` module, which serves the app API 1.3, but for Apple and the page that an invitation's link opens.
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API 1.3, but for Apple and the page that an invitation's link opens; and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -56,7 +56,7 @@ The same package runs as three processes, each started by its own entry point:
 | `updates` | Release channels, rollouts in stages, announcements to devices, each device's update state |
 | `operations` | Health and metrics from devices, usage and cost metering, quotas, administration |
 | `notifications` | Push to the app, and email |
-| `shared` | Configuration, identifiers, errors, JOSE, the protocols' schemas read from `platform/`, observability |
+| `shared` | Configuration, identifiers, errors, JOSE, the protocols' schemas read from `platform/`, domain events' outboxes and their delivery, observability |
 
 Each module has the same shape:
 
@@ -79,7 +79,11 @@ Each module has the same shape:
 - **Within a process**, through each other's `api.py`.
 - **Across processes, and for what follows a change**, through domain events. A module writes its event in the same transaction as the change (a transactional outbox), and `worker` delivers it through a queue. When `devices` records a binding, for example, `notifications` tells the app and `updates` starts checking the device's version.
 - **In a conversation**, the agent gives the model one list of tools, all of them MCP: the device's, which `devices` calls on the device's control channel, and the skills', in the process or over the network. A third party's skill would be one more MCP server.
-- **Events** carry a version, and arrive at least once, so every consumer is idempotent.
+- **Events** carry a version, and arrive at least once and in any order, so every consumer is idempotent and does not count on an order ([ADR-0009](decisions/0009-domain-events.md)):
+  - each module has its outbox in its own schema, and writes an event through its transaction's port;
+  - `worker` relays each outbox to the module's stream in Redis, `<module>:events`, each event at the place its outbox gave it, and hands it to every consumer of its type;
+  - a consumer is a consumer group, `<module>.<what it does>`. An event its handler fails is tried again later, each time after twice as long, and after too many tries goes to its module's dead letters, with an error in the log;
+  - a module sees `Outbox`, `DomainEvent`, `Event` and `Consumer`, never the queue, which an import contract keeps from it.
 
 ## The conversation pipeline
 
@@ -116,7 +120,7 @@ The shape is decided here; the providers are chosen in ADR-0003.
   - A module's migrations are a branch of the one Alembic environment, beside its tables, with its version table in its schema ([ADR-0008](decisions/0008-data-and-tokens.md)).
 - **Each module's data is its own.** Other modules refer to it by identifier only: no foreign keys or joins across schemas, and reads go through the owner's `api.py`. A module's tables can then move to a database of their own.
 - **Everything that grows with use carries `home_id`** ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)), so that the data can be partitioned or sharded by home. High-volume tables (usage, health reports, turns) are partitioned by time, and their old partitions dropped as their retention says.
-- **Redis** holds only what can be lost: caches, rate limits, presence, the event queue (Redis Streams). Losing it loses nothing that matters.
+- **Redis** holds only what can be lost: caches, rate limits, presence, the event queue (Redis Streams). Losing it loses nothing that matters: each outbox keeps its events for their retention, and the relay writes again what a stream lost.
 - **Object storage**, S3-compatible, holds backups and exports. Audio is not kept unless an owner asks.
 - **Retention:** each table says how long it keeps its rows, and an owner's data can be deleted (PRIV-4).
 
@@ -230,3 +234,4 @@ Luni Cloud was the preview. What it taught, and what changes:
 | ADR-0006 | Personal data and the law |
 | [0007](decisions/0007-media-at-home.md) | Media at home: devices at home talk through a LiveKit server at home (proposed) |
 | [0008](decisions/0008-data-and-tokens.md) | Data and tokens: SQLAlchemy Core on asyncpg, Alembic, Redis, and PyJWT |
+| [0009](decisions/0009-domain-events.md) | Domain events: an outbox in each module, relayed by the worker to Redis Streams |

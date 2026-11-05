@@ -1,6 +1,6 @@
 # ai-cloud
 
-> **Status:** early. The `api` process serves ai-platform's app API 1.3: signing in, with Google and, in development, test people, and homes with their people and invitations. Apple, the page that an invitation's link opens, devices' tokens and the control channel come next. The [architecture](docs/architecture.md), the stack, the conversation pipeline, hosting, and data and tokens are accepted; personal data and the law are still to decide ([dev log](docs/devlog/2026-11.md)).
+> **Status:** early. The `api` process serves ai-platform's app API 1.3: signing in, with Google and, in development, test people, and homes with their people and invitations. The `worker` process relays the modules' domain events, such as a deleted home, and hands them to their consumers. Apple, the page that an invitation's link opens, devices' tokens and the control channel come next. The [architecture](docs/architecture.md), the stack, the conversation pipeline, hosting, data and tokens, and domain events are accepted; personal data and the law are still to decide ([dev log](docs/devlog/2026-11.md)).
 
 The cloud side of the project's AI devices, the first of which is [ai-robot](https://github.com/trungnguyen278/ai-robot), a mobile robot with an expressive face that people talk to. A device handles its own body, screen and senses; the cloud is its AI, and runs what every device needs from it.
 
@@ -41,6 +41,7 @@ cp .env.example .env                                       # then set AI_CLOUD_S
 uv run ai-cloud signing-key                                # to a new key this prints
 uv run --env-file .env ai-cloud migrate                    # the tables, at their newest migration
 uv run --env-file .env ai-cloud api                        # then http://127.0.0.1:8000/health
+uv run --env-file .env ai-cloud worker                     # the events, in a terminal of its own
 ```
 
 In the development environment, test people sign in without Google or Apple (the app API's Development).
