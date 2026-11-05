@@ -240,6 +240,11 @@ class Cloud:
         finally:
             await engine.dispose()
 
+    async def events(self) -> list[tuple[str, dict[str, Any]]]:
+        """The events the accounts have written, in their order: each one's type and data."""
+        rows = await self.sql("SELECT type, data FROM accounts.outbox ORDER BY seq")
+        return [(row.type, row.data) for row in rows]
+
     async def redis(self, *command: Any) -> Any:
         """Run a Redis command, to see what the cloud keeps there."""
         client = redis.asyncio.Redis.from_url(self.redis_url)

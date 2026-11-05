@@ -2,8 +2,9 @@
 """Command line: ``ai-cloud <command>`` or ``python -m ai_cloud <command>``.
 
 Each process role runs from the same package (docs/decisions/0001-architecture.md):
-``api`` serves, and ``migrate`` brings the database's tables up to date before a
-deployment's processes start. ``signing-key`` makes a key for the cloud's tokens.
+``api`` serves, ``worker`` relays the modules' events and hands them to their consumers,
+and ``migrate`` brings the database's tables up to date before a deployment's processes
+start. ``signing-key`` makes a key for the cloud's tokens.
 """
 
 import argparse
@@ -16,7 +17,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from ai_cloud import software_version
-from ai_cloud.entry import api, migrate
+from ai_cloud.entry import api, migrate, worker
 from ai_cloud.entry.settings import CloudSettings
 from ai_cloud.shared.config import CONFIG_DIR_ENV, ConfigError, load_config
 from ai_cloud.shared.database import DATABASE_URL_ENV, database_url
@@ -40,6 +41,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         settings = CloudSettings.from_config(load_config(args.environment, args.config_dir))
         if args.command == "api":
             secrets = api.ApiSecrets.read()
+        elif args.command == "worker":
+            worker_secrets = worker.WorkerSecrets.read()
         else:
             url = read_secret(DATABASE_URL_ENV)
             database_url(url)
@@ -54,6 +57,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     if args.command == "api":
         api.run(settings, secrets)
+    elif args.command == "worker":
+        worker.run(settings, worker_secrets)
     elif args.revision is not None:
         [module] = [each for each in migrate.MODULES if each.schema == args.module]
         path = asyncio.run(migrate.revise(url, settings.database, module, args.revision))
@@ -69,6 +74,9 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     commands = parser.add_subparsers(dest="command", required=True, metavar="command")
     roles = {
         "api": commands.add_parser("api", help="serve the devices' and the apps' requests"),
+        "worker": commands.add_parser(
+            "worker", help="relay the modules' events, and hand them to their consumers"
+        ),
         "migrate": commands.add_parser(
             "migrate", help="bring every module's tables to its newest migration"
         ),

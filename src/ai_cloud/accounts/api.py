@@ -3,6 +3,10 @@
 
 The api process serves ``Accounts.router``; the other modules learn whom a request
 speaks for from ``Accounts.authenticate``; ``ai-cloud migrate`` runs ``MIGRATIONS``.
+
+The other modules learn what happened from the accounts' events: ``MemberRemoved``,
+``HomeDeleted`` and ``AccountDeleted``, each with its ``TYPE`` and its ``from_data``. The
+worker relays them from ``OUTBOX``.
 """
 
 import httpx2
@@ -14,8 +18,9 @@ from ai_cloud.accounts.adapters.google import google
 from ai_cloud.accounts.adapters.oidc import IdTokenProviders, OidcProvider
 from ai_cloud.accounts.adapters.postgres import PostgresStore
 from ai_cloud.accounts.adapters.redis import RedisNonces
-from ai_cloud.accounts.db.tables import MIGRATIONS
+from ai_cloud.accounts.db.tables import MIGRATIONS, OUTBOX
 from ai_cloud.accounts.domain.errors import Unauthenticated
+from ai_cloud.accounts.domain.events import AccountDeleted, HomeDeleted, MemberRemoved
 from ai_cloud.accounts.domain.model import Principal
 from ai_cloud.accounts.routes import router
 from ai_cloud.accounts.service import AccountsService, HomesService, SignIns
@@ -23,7 +28,17 @@ from ai_cloud.accounts.settings import AccountsSettings
 from ai_cloud.shared.jose import SigningKeys, TokenSettings
 from ai_cloud.shared.rates import RedisRateLimiter
 
-__all__ = ["MIGRATIONS", "Accounts", "AccountsSettings", "Principal", "Unauthenticated"]
+__all__ = [
+    "MIGRATIONS",
+    "OUTBOX",
+    "AccountDeleted",
+    "Accounts",
+    "AccountsSettings",
+    "HomeDeleted",
+    "MemberRemoved",
+    "Principal",
+    "Unauthenticated",
+]
 
 NONCE_RATE_PREFIX = "accounts:nonce-rate:"
 INVITATION_RATE_PREFIX = "accounts:invitation-rate:"

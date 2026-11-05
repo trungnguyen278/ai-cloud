@@ -80,6 +80,19 @@ protected_modules = [
 ]
 allowed_importers = ["ai_cloud.accounts"]
 
+# A module writes its events and declares its consumers; only the worker relays and delivers
+# them, so that the queue can change beneath the modules (docs/decisions/0009-domain-events.md).
+[[tool.importlinter.contracts]]
+name = "The modules know nothing of the events' queue"
+type = "forbidden"
+source_modules = ["ai_cloud.accounts"]
+forbidden_modules = [
+  "ai_cloud.shared.events.consumers",
+  "ai_cloud.shared.events.queue",
+  "ai_cloud.shared.events.relay",
+  "ai_cloud.shared.events.streams",
+]
+
 # Inside a module: its use cases and its adapters meet only through its ports, and its
 # domain needs nothing but itself.
 [[tool.importlinter.contracts]]

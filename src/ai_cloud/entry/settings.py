@@ -6,13 +6,14 @@ anywhere stops every role at once rather than one of them later. Each module add
 table here as it comes.
 """
 
-from typing import Annotated
+from typing import Annotated, Self
 
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from ai_cloud.accounts.api import AccountsSettings
 from ai_cloud.shared.config import Settings
 from ai_cloud.shared.database import DatabaseSettings
+from ai_cloud.shared.events import EventsSettings
 from ai_cloud.shared.jose import TokenSettings
 from ai_cloud.shared.logs import LoggingSettings
 from ai_cloud.shared.redis import RedisSettings
@@ -39,4 +40,12 @@ class CloudSettings(Settings):
     database: DatabaseSettings
     redis: RedisSettings
     tokens: TokenSettings
+    events: EventsSettings
     accounts: AccountsSettings
+
+    @model_validator(mode="after")
+    def _reads_end_before_redis_gives_up(self) -> Self:
+        # Redis's client would cut a longer read short, as if Redis had failed.
+        if self.events.read_wait >= self.redis.timeout:
+            raise ValueError("events.read_wait must be less than redis.timeout")
+        return self

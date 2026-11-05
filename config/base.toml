@@ -43,8 +43,8 @@ connect_timeout = 10
 command_timeout = 30
 
 [redis]
-# Redis, for what may be lost: nonces, rate limits. Its URL is a secret:
-# AI_CLOUD_REDIS_URL.
+# Redis, for what may be lost: nonces, rate limits, the events' streams. Its URL is a
+# secret: AI_CLOUD_REDIS_URL.
 #
 # Seconds to open a connection.
 connect_timeout = 5
@@ -62,6 +62,38 @@ issuer = "ai-cloud"
 # Seconds by which clocks may disagree when a token's times are checked: the cloud's,
 # and those of the providers whose ID tokens it reads.
 leeway = 30
+
+[events]
+# Domain events (docs/decisions/0009-domain-events.md): the worker relays each module's
+# outbox to its stream in Redis, and hands the events to the consumers.
+#
+# Seconds between two looks at the outboxes while they are empty: the longest an event
+# waits to be relayed. Eventuate's relay polls every 0.5 s.
+poll_interval = 0.5
+# Events relayed, or swept, at a time. Eventuate's relay reads 1000.
+batch_size = 1000
+# Seconds an event stays in its outbox and its stream once relayed, and a dead letter is
+# kept: the longest a consumer may be away and still get every event. 7 days, Kafka's
+# default.
+retention = 604_800
+# Seconds between two sweeps of what is past the retention.
+sweep_interval = 3600
+# Seconds the relay and the consumers wait after PostgreSQL or Redis failed them.
+reconnect_delay = 5
+# Seconds a consumer waits for a new event in one read, before it looks for retries again,
+# or sees that it must stop: less than [redis] timeout, which would cut the read short.
+read_wait = 2
+# Seconds a handler may take; one that takes longer has failed. Less than retry_delay, so
+# that no retry starts while the try before it may still run.
+handler_timeout = 20
+# Seconds before an event whose handler failed is tried again. Each retry waits twice as
+# long as the one before, up to retry_delay_max: 6 hours.
+retry_delay = 30
+retry_delay_max = 21_600
+# Deliveries an event gets before it is put aside as a dead letter: with the delays above,
+# some 2.6 days of retries, so that an outage of a day or two loses nothing. Sidekiq retries
+# for about 20 days before its dead set; the retention bounds ours.
+max_deliveries = 20
 
 [accounts]
 # Signing in, the account, and homes (ai-platform's app API:

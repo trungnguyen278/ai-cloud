@@ -35,6 +35,7 @@ from ai_cloud.accounts.domain.errors import (
     Unauthenticated,
     UnknownTimeZone,
 )
+from ai_cloud.accounts.domain.events import HomeDeleted, MemberRemoved
 from ai_cloud.accounts.domain.model import (
     Home,
     HomeChanges,
@@ -200,6 +201,7 @@ class HomesService:
             if await store.has_other_accounts(home_id, view.member.id):
                 raise OwnsHomeWithMembers("others with accounts are in the home")
             await store.delete_home(home_id)
+            await store.emit(HomeDeleted(home_id))
         log.info("home deleted", extra={"home": str(home_id), "account": str(principal.account_id)})
 
     # The people in a home.
@@ -298,6 +300,7 @@ class HomesService:
             elif not may_change(view.member, target):
                 raise RoleRequired("this role may not remove that person")
             await store.delete_member(target.id)
+            await store.emit(MemberRemoved(home_id, target.id, target.account_id))
         log.info("person removed", extra={"home": str(home_id), "member": str(target.id)})
 
     # Invitations.
@@ -443,7 +446,7 @@ class HomesService:
 async def remove_from_homes(store: Transaction, account_id: UUID) -> None:
     """A step of deleting an account, which is held: its person leaves every home it is in,
     and a home it owns goes with it. ``OwnsHomeWithMembers`` if others with accounts are in
-    one of those, so that the deletion stops whole."""
+    one of those, so that the deletion stops whole, events and all."""
     for home_id in await store.home_ids_of(account_id):
         if await store.home(home_id, lock=True) is None:
             continue
@@ -452,10 +455,12 @@ async def remove_from_homes(store: Transaction, account_id: UUID) -> None:
             continue
         if member.role is not Role.OWNER:
             await store.delete_member(member.id)
+            await store.emit(MemberRemoved(home_id, member.id, account_id))
         elif await store.has_other_accounts(home_id, member.id):
             raise OwnsHomeWithMembers("others with accounts are in a home it owns")
         else:
             await store.delete_home(home_id)
+            await store.emit(HomeDeleted(home_id))
             log.info("home deleted", extra={"home": str(home_id), "account": str(account_id)})
 
 

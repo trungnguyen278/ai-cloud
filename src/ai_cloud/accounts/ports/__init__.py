@@ -8,6 +8,7 @@ from datetime import datetime
 from typing import Any, Protocol
 from uuid import UUID
 
+from ai_cloud.accounts.domain.events import AccountsEvent
 from ai_cloud.accounts.domain.model import (
     Account,
     FirstAnswer,
@@ -34,6 +35,11 @@ class IdentityOwner:
 class Transaction(Protocol):
     """Reads and writes that stand or fall together. Each raises nothing of its own but
     ``IdentityConflict``."""
+
+    async def emit(self, event: AccountsEvent) -> None:
+        """Tell the other modules of a change, once the transaction commits: the event is
+        written with it, or not at all (docs/decisions/0009-domain-events.md)."""
+        ...
 
     async def identity(self, provider: str, subject: str) -> IdentityOwner | None: ...
 

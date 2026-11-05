@@ -14,3 +14,4 @@ Each significant decision is a short file: context, decision, alternatives consi
 | [0004](0004-hosting.md) | Hosting: one machine at home behind a tunnel, LiveKit Cloud for media | Accepted | 2026-10-28 |
 | [0007](0007-media-at-home.md) | Media at home: devices at home talk through a LiveKit server at home | Proposed | 2026-10-29 |
 | [0008](0008-data-and-tokens.md) | Data and tokens: SQLAlchemy Core on asyncpg, Alembic, Redis, and PyJWT | Accepted | 2026-11-01 |
+| [0009](0009-domain-events.md) | Domain events: an outbox in each module, relayed by the worker to Redis Streams | Accepted | 2026-11-05 |
