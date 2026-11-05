@@ -1,29 +1,32 @@
 # SPDX-License-Identifier: MIT
-"""What the tests share: a clean environment, the development settings, and PostgreSQL
-and Redis in Docker (docs/decisions/0008-data-and-tokens.md, decision 5), as the
-development Compose file runs them."""
+"""What the tests share: a clean environment, the development settings, PostgreSQL and
+Redis in Docker (docs/decisions/0008-data-and-tokens.md, decision 5), as the development
+Compose file runs them, and the api served in the tests' own process."""
 
 import asyncio
 import json
 import logging
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
+from contextlib import AbstractAsyncContextManager
 from pathlib import Path
 from typing import Any
 
+import httpx2
 import pytest
 import yaml
+from app_api import ADDRESS, Cloud
 from docker.errors import DockerException
 from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.community.redis import RedisContainer
 
 from ai_cloud.__main__ import ENVIRONMENT_ENV
-from ai_cloud.accounts.db.tables import tables as accounts_tables
-from ai_cloud.entry.migrate import migrate
+from ai_cloud.entry.api import ApiSecrets, create_app
+from ai_cloud.entry.migrate import MODULES, migrate
 from ai_cloud.entry.settings import CloudSettings
 from ai_cloud.shared.config import CONFIG_DIR_ENV, deep_merge, load_config
 from ai_cloud.shared.database import DATABASE_URL_ENV, create_engine
-from ai_cloud.shared.jose import SIGNING_KEYS_ENV, new_signing_key
+from ai_cloud.shared.jose import SIGNING_KEYS_ENV, SigningKeys, new_signing_key
 from ai_cloud.shared.protocols import PLATFORM_DIR_ENV
 from ai_cloud.shared.redis import REDIS_URL_ENV
 from ai_cloud.shared.secrets import FILE_SUFFIX
@@ -32,6 +35,7 @@ COMPOSE = Path(__file__).resolve().parents[1] / "deploy" / "compose.development.
 SECRETS = (DATABASE_URL_ENV, REDIS_URL_ENV, SIGNING_KEYS_ENV)
 
 type MakeSettings = Callable[..., CloudSettings]
+type MakeCloud = Callable[..., Awaitable[Cloud]]
 
 
 @pytest.fixture(autouse=True)
@@ -109,7 +113,11 @@ async def database(postgres_url: str) -> AsyncIterator[str]:
     yield postgres_url
     engine = create_engine(postgres_url, _settings().database, "ai-cloud tests")
     try:
-        names = ", ".join(f"{table.schema}.{table.name}" for table in accounts_tables.sorted_tables)
+        names = ", ".join(
+            f"{table.schema}.{table.name}"
+            for module in MODULES
+            for table in module.metadata.sorted_tables
+        )
         async with engine.begin() as connection:
             await connection.execute(text(f"TRUNCATE {names} CASCADE"))
     finally:
@@ -127,3 +135,33 @@ def redis_url(redis_container: RedisContainer) -> Iterator[str]:
         client.flushdb()
     finally:
         client.close()
+
+
+@pytest.fixture
+async def make_cloud(
+    database: str, redis_url: str, make_settings: Any, jwk_set: Callable[[int], str]
+) -> AsyncIterator[MakeCloud]:
+    """Serve an api with these changes to the development settings, and give an app that
+    reaches it."""
+    opened: list[tuple[AbstractAsyncContextManager[None], httpx2.AsyncClient]] = []
+
+    async def make(*, keys: SigningKeys | None = None, **changes: Any) -> Cloud:
+        keys = keys or SigningKeys.from_jwk_set(jwk_set(1))
+        settings = make_settings(**changes)
+        app = create_app(settings, ApiSecrets(database, redis_url, keys))
+        lifespan = app.router.lifespan_context(app)
+        await lifespan.__aenter__()
+        transport = httpx2.ASGITransport(app=app, client=(ADDRESS, 50000))
+        http = httpx2.AsyncClient(transport=transport, base_url="http://cloud.test")
+        opened.append((lifespan, http))
+        return Cloud(http, keys=keys, settings=settings, database=database, redis_url=redis_url)
+
+    yield make
+    for lifespan, http in reversed(opened):
+        await http.aclose()
+        await lifespan.__aexit__(None, None, None)
+
+
+@pytest.fixture
+async def cloud(make_cloud: MakeCloud) -> Cloud:
+    return await make_cloud()

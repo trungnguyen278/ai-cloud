@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API 1.3, but for Apple and the page that an invitation's link opens; and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up and keeps their keys, before their tokens and their control channel (the app API 1.4, [ADR-0010](decisions/0010-device-registrations.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -56,7 +56,7 @@ The same package runs as three processes, each started by its own entry point:
 | `updates` | Release channels, rollouts in stages, announcements to devices, each device's update state |
 | `operations` | Health and metrics from devices, usage and cost metering, quotas, administration |
 | `notifications` | Push to the app, and email |
-| `shared` | Configuration, identifiers, errors, JOSE, the protocols' schemas read from `platform/`, domain events' outboxes and their delivery, observability |
+| `shared` | Configuration, identifiers, errors, JOSE, the protocols' schemas read from `platform/`, the app API's conventions, domain events' outboxes and their delivery, observability |
 
 Each module has the same shape:
 
@@ -131,8 +131,8 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 | With | How |
 |---|---|
 | Devices | The cloud link: a control channel always on (a WebSocket), and a LiveKit room to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)) |
-| The app | The app API over HTTPS (`platform/protocols/app/`; 1.3 signs people in and keeps their homes), and push |
-| Set-up | The registration that the app relays (the set-up protocol) |
+| The app | The app API over HTTPS (`platform/protocols/app/`; 1.4 signs people in, keeps their homes, and registers their devices), and push |
+| Set-up | The registration that the app relays (the set-up protocol), through the app API's devices |
 
 ## Security
 
@@ -235,3 +235,4 @@ Luni Cloud was the preview. What it taught, and what changes:
 | [0007](decisions/0007-media-at-home.md) | Media at home: devices at home talk through a LiveKit server at home (proposed) |
 | [0008](decisions/0008-data-and-tokens.md) | Data and tokens: SQLAlchemy Core on asyncpg, Alembic, Redis, and PyJWT |
 | [0009](decisions/0009-domain-events.md) | Domain events: an outbox in each module, relayed by the worker to Redis Streams |
+| [0010](decisions/0010-device-registrations.md) | Registering devices: challenges in PostgreSQL, used in the registration's transaction |

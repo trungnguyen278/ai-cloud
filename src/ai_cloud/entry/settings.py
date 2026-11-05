@@ -11,6 +11,8 @@ from typing import Annotated, Self
 from pydantic import Field, model_validator
 
 from ai_cloud.accounts.api import AccountsSettings
+from ai_cloud.devices.api import DevicesSettings
+from ai_cloud.shared.app_api import AppApiSettings
 from ai_cloud.shared.config import Settings
 from ai_cloud.shared.database import DatabaseSettings
 from ai_cloud.shared.events import EventsSettings
@@ -41,7 +43,9 @@ class CloudSettings(Settings):
     redis: RedisSettings
     tokens: TokenSettings
     events: EventsSettings
+    app_api: AppApiSettings
     accounts: AccountsSettings
+    devices: DevicesSettings
 
     @model_validator(mode="after")
     def _reads_end_before_redis_gives_up(self) -> Self:
