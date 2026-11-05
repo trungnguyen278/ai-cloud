@@ -28,7 +28,6 @@ from ai_cloud.accounts.domain.model import (
     Account,
     AccountChanges,
     Identity,
-    Page,
     Principal,
     Session,
     Tokens,
@@ -36,14 +35,13 @@ from ai_cloud.accounts.domain.model import (
     etag_matches,
     new_nonce,
     new_refresh_token,
-    page_after,
-    page_of,
     token_hash,
 )
 from ai_cloud.accounts.ports import DevelopmentIdTokens, Nonces, Store
 from ai_cloud.accounts.service.common import SignIns, account_of, check_signs_in_to, now
 from ai_cloud.accounts.service.homes import remove_from_homes
 from ai_cloud.accounts.settings import AccountsSettings
+from ai_cloud.shared.app_api import Page, page_of
 from ai_cloud.shared.jose import SigningKeys, TokenError, TokenSettings
 from ai_cloud.shared.protocols import protocol_schema
 from ai_cloud.shared.rates import RateLimiter, address_subject
@@ -348,11 +346,10 @@ class AccountsService:
     # Sessions.
 
     async def sessions(
-        self, principal: Principal, page_size: int, page_token: str | None
+        self, principal: Principal, page_size: int, after: UUID | None
     ) -> Page[Session]:
-        """A page of the account's sessions, newest first. ``InvalidPageToken`` for a
-        page token this list did not give."""
-        after = page_after(page_token)
+        """A page of the account's sessions, newest first, from the one after
+        ``after``."""
         async with self._store.transaction() as store:
             found = await store.sessions(
                 principal.account_id,

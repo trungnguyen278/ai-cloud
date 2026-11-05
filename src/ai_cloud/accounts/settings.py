@@ -50,8 +50,6 @@ class AccountsSettings(Settings):
     # Seconds since it was issued within which an ID token may delete its account or a
     # home, or hand a home over (recent_sign_in).
     recent_sign_in: Annotated[int, Field(ge=1)]
-    # Seconds a retry with an Idempotency-Key gets the first answer (idempotency_retention).
-    idempotency_retention: Annotated[int, Field(ge=1)]
     # How many homes an account may be in (homes_per_account).
     homes_per_account: Annotated[int, Field(ge=1)]
     # How many people a home may have, profiles included (members_per_home).

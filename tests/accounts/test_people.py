@@ -5,11 +5,14 @@ in a home)."""
 import asyncio
 import uuid
 
+import httpx2
 import pytest
 from app_api import bearer, conforms, once, problem
 from sqlalchemy import text
 
+from ai_cloud.accounts.api import Accounts, Membership, Role
 from ai_cloud.shared.database import create_engine
+from ai_cloud.shared.redis import create_redis
 
 pytestmark = pytest.mark.anyio
 
@@ -440,3 +443,38 @@ async def test_an_identifier_the_home_does_not_hold_answers_404(cloud) -> None:
         problem(await cloud.http.delete(path, headers=bearer(family.owner)), 404)
     [person] = await cloud.members(family.outsider, theirs)
     assert person["display_name"] == "Bảo"
+
+
+async def test_another_module_learns_what_an_account_is_in_a_home(cloud) -> None:
+    family = await cloud.family()
+    settings = cloud.settings
+    engine = create_engine(cloud.database, settings.database, "ai-cloud tests")
+    redis = create_redis(cloud.redis_url, settings.redis)
+    try:
+        async with httpx2.AsyncClient() as http:
+            accounts = Accounts(
+                settings.accounts,
+                settings.tokens,
+                settings.app_api,
+                keys=cloud.keys,
+                engine=engine,
+                redis=redis,
+                http=http,
+            )
+            home_id = uuid.UUID(family.home["id"])
+            for person, role, manages in (
+                ("owner", Role.OWNER, True),
+                ("admin", Role.ADMIN, True),
+                ("member", Role.MEMBER, False),
+            ):
+                account_id = uuid.UUID((await cloud.account(getattr(family, person)))["id"])
+                member_id = uuid.UUID(family.ids[person])
+                expected = Membership(member_id, role, manages)
+                assert await accounts.membership(account_id, home_id) == expected
+            outsider = uuid.UUID((await cloud.account(family.outsider))["id"])
+            assert await accounts.membership(outsider, home_id) is None
+            owner = uuid.UUID((await cloud.account(family.owner))["id"])
+            assert await accounts.membership(owner, uuid.uuid7()) is None
+    finally:
+        await redis.aclose()
+        await engine.dispose()

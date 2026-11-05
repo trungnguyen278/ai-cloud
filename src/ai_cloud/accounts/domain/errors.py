@@ -33,10 +33,6 @@ class RateLimited(AccountsError):
         self.retry_after = retry_after
 
 
-class InvalidPageToken(AccountsError):
-    """A page token that the list did not give."""
-
-
 class NotFound(AccountsError):
     """No such item in the account, or in a home it is in."""
 

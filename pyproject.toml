@@ -63,7 +63,7 @@ root_package = "ai_cloud"
 [[tool.importlinter.contracts]]
 name = "Layers: the entry points, then the modules, then shared"
 type = "layers"
-layers = ["ai_cloud.entry", "ai_cloud.accounts", "ai_cloud.shared"]
+layers = ["ai_cloud.entry", "ai_cloud.devices", "ai_cloud.accounts", "ai_cloud.shared"]
 
 # Outside a module, only its api.py.
 [[tool.importlinter.contracts]]
@@ -80,12 +80,26 @@ protected_modules = [
 ]
 allowed_importers = ["ai_cloud.accounts"]
 
+[[tool.importlinter.contracts]]
+name = "The devices' insides are their own"
+type = "protected"
+protected_modules = [
+  "ai_cloud.devices.adapters",
+  "ai_cloud.devices.db",
+  "ai_cloud.devices.domain",
+  "ai_cloud.devices.ports",
+  "ai_cloud.devices.routes",
+  "ai_cloud.devices.service",
+  "ai_cloud.devices.settings",
+]
+allowed_importers = ["ai_cloud.devices"]
+
 # A module writes its events and declares its consumers; only the worker relays and delivers
 # them, so that the queue can change beneath the modules (docs/decisions/0009-domain-events.md).
 [[tool.importlinter.contracts]]
 name = "The modules know nothing of the events' queue"
 type = "forbidden"
-source_modules = ["ai_cloud.accounts"]
+source_modules = ["ai_cloud.accounts", "ai_cloud.devices"]
 forbidden_modules = [
   "ai_cloud.shared.events.consumers",
   "ai_cloud.shared.events.queue",
@@ -98,5 +112,5 @@ forbidden_modules = [
 [[tool.importlinter.contracts]]
 name = "A module's own layers"
 type = "layers"
-containers = ["ai_cloud.accounts"]
+containers = ["ai_cloud.accounts", "ai_cloud.devices"]
 layers = ["api", "routes", "service | adapters", "ports | db", "domain | settings"]

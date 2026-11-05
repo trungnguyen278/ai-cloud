@@ -229,6 +229,45 @@ class Cloud:
         assert response.status_code == 200, response.text
         return Family(home, owner, admin, member, outsider, ids)
 
+    async def challenge(self, tokens: dict[str, Any], home: dict[str, Any]) -> dict[str, Any]:
+        """A challenge to register a device into the home."""
+        response = await self.http.post(
+            f"/app/v1/homes/{home['id']}/device-challenges", headers=bearer(tokens)
+        )
+        assert response.status_code == 201, response.text
+        assert response.headers["cache-control"] == "no-store"
+        return conforms(response, "device_challenge")
+
+    async def register(
+        self, tokens: dict[str, Any], home: dict[str, Any], registration: str, key: str = ""
+    ) -> httpx2.Response:
+        """Relay a device's registration into the home, with the Idempotency-Key ``key``, or
+        a new one."""
+        return await self.http.post(
+            f"/app/v1/homes/{home['id']}/devices",
+            json={"registration": registration},
+            headers=once(tokens, key or None),
+        )
+
+    async def add_device(
+        self, tokens: dict[str, Any], home: dict[str, Any], device: Any
+    ) -> dict[str, Any]:
+        """Register ``device`` into the home, as set-up does: a challenge, which the device
+        signs, then its registration."""
+        issued = await self.challenge(tokens, home)
+        response = await self.register(
+            tokens, home, device.registration(issued["challenge"], issued["server"])
+        )
+        assert response.status_code == 201, response.text
+        return conforms(response, "device")
+
+    async def devices(self, tokens: dict[str, Any], home: dict[str, Any]) -> list[dict[str, Any]]:
+        response = await self.http.get(
+            f"/app/v1/homes/{home['id']}/devices", headers=bearer(tokens)
+        )
+        assert response.status_code == 200, response.text
+        return conforms(response, "device_list")["devices"]
+
     async def sql(self, statement: str, **values: Any) -> list[Any]:
         """Run ``statement`` on the database, for what no request does, such as aging a
         session."""

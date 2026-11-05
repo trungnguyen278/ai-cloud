@@ -31,6 +31,9 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - Text can hold a lone surrogate, which JSON's escapes can spell and no driver can store: a body read any other way than `json_body` must refuse it.
 - A replayed message has no effect beyond its first one, and credentials expire (SEC-12).
 - A credential that may be presented again, such as a refresh token retried after a lost answer, still gives theft away: what it replaces stops working, and that one presented again ends the session. Deleting it instead would turn the thief's next step into a plain refusal.
+- What a token says before it is verified, such as a registration's challenge, is checked for its form before anything uses it: a lone surrogate in it fails as a `500` where it is hashed or stored. The whole token is verified after.
+- What the cloud keys on, such as a device's key, is read one way only: base64url strictly, without padding or bits left over, and a curve's coordinates below its prime. PyJWT's decoding and `cryptography` both accept more, and one key would have two thumbprints.
+- A request that uses something once, such as a challenge, keeps its answer for a retry whatever it is, a refusal included, in the transaction of the use. One that used nothing keeps nothing.
 
 ### Security and privacy
 
@@ -44,12 +47,14 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - Nothing blocks an event loop: file and network I/O are asynchronous, or run in a worker.
 - Transactions lock rows in one order, the one a cascade takes (an account, then its sessions, then their tokens; an account, then a home, then what is in it), so that none deadlocks with a deletion. A row deleted only to tidy up counts: it is held from then on, so it comes after every other lock, or goes to the `worker`. A race the code handles, such as two first sign-ins of one identity, has a test that runs it.
 - A failure in one robot's session never stops another's.
+- A module that forgets what another's deletion took locks none of that module's rows: it first deletes the rows that every change in flight holds, such as its challenges. Read Committed then makes it wait for those changes, and its next statement sees what they added. Tests run both orders: a change in flight, and one that comes after.
 
 ### Domain events (docs/decisions/0009-domain-events.md)
 
 - A change that other modules must learn of writes its event through its module's `emit`, in the change's own transaction, under the lock of the thing it is about, so that their order holds. A test shows that a change that fails writes no event.
 - An event's data holds identifiers: never personal data, a secret or content, which would outlive the deletion it reports, for the retention.
 - A handler is idempotent, and works in any order: a test gives it the same event twice.
+- A handler logs what it changed, and nothing for an event that changed nothing: every worker reads every module's events.
 - What goes to Redis, or another store, as JSON is ASCII, as `json.dumps` writes it by default: a lone surrogate, which a `json` column takes as an escape, cannot be encoded as UTF-8, and would hold up every event behind it.
 - A blocking read, such as Redis's `BLOCK`, ends before the client's own timeout, which would cut it short as if the server had failed: the configuration checks it.
 - Work that several workers may do on the same rows at once, such as a sweep, first takes its turn, under a transaction-level advisory lock.
@@ -58,7 +63,8 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 ### Tests
 
 - Each behaviour change has a test that would fail on the old code; check it is not vacuous (an exact float compare that never matches, a loop that never runs).
-- No fixed sleeps to wait for readiness: wait for the condition, with a timeout.
+- No fixed sleeps to wait for readiness: wait for the condition, with a timeout. A race test waits until the other side is blocked on its lock, as `pg_stat_activity` shows, before it lets the first go.
+- A test that compares a module's tables with what it declares looks at that module's schema only: the other modules' tables show as removed.
 
 ### Repository rules (CONTRIBUTING.md, AGENTS.md)
 
