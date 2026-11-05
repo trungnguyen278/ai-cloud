@@ -95,6 +95,13 @@ retry_delay_max = 21_600
 # for about 20 days before its dead set; the retention bounds ours.
 max_deliveries = 20
 
+[app_api]
+# What the modules that serve ai-platform's app API share (platform/protocols/app/README.md,
+# whose Settings these are).
+#
+# Seconds a retry with an Idempotency-Key gets the first answer: 24 hours.
+idempotency_retention = 86_400
+
 [accounts]
 # Signing in, the account, and homes (ai-platform's app API:
 # platform/protocols/app/README.md, whose Settings these are).
@@ -114,8 +121,6 @@ refresh_reuse = 60
 # Seconds since it was issued within which an ID token may delete its account or a home,
 # or hand a home over.
 recent_sign_in = 300
-# Seconds a retry with an Idempotency-Key gets the first answer: 24 hours.
-idempotency_retention = 86_400
 # How many homes an account may be in: as in Google Home.
 homes_per_account = 5
 # How many people a home may have, profiles included.
@@ -164,3 +169,22 @@ issuer = "ai-cloud-development"
 client_id = "ai-app"
 # Seconds its ID tokens are valid.
 id_token_lifetime = 600
+
+[devices]
+# A home's devices, and set-up's registration into one (ai-platform's app API:
+# platform/protocols/app/README.md, whose Settings these are).
+#
+# server, the address that devices use to reach the cloud, is each deployment's: the
+# development environment's file names this machine, and a deployment its own, in its
+# local.toml. Without it, the cloud does not start.
+#
+# Seconds a challenge to register a device is valid: as long as AWS IoT's claim
+# certificates.
+challenge_lifetime = 300
+# How many devices a home may have: as many as SmartThings allows in a location.
+devices_per_home = 300
+
+[devices.challenge_rate]
+# How many challenges to register a device one account gets: 10 a minute.
+limit = 10
+period = 60

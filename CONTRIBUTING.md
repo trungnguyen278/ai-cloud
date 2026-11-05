@@ -40,7 +40,7 @@ Follow [Conventional Commits](https://www.conventionalcommits.org/): `<type>(<sc
 | `test` | Adding or changing tests |
 | `chore` | Tooling, configuration, CI, housekeeping |
 
-The scope is the affected area: `agent`, `auth`, `accounts`, `events` (domain events and the `worker` that delivers them), `updates`, `ops`, `shared`, `platform` (moving the pin), `docs`, `ci`. Add a scope when a new area appears.
+The scope is the affected area: `agent`, `auth`, `accounts`, `devices` (a home's devices: their registry, tokens and control channel), `events` (domain events and the `worker` that delivers them), `updates`, `ops`, `shared`, `platform` (moving the pin), `docs`, `ci`. Add a scope when a new area appears.
 
 Example: `feat(auth): give devices their tokens for their room`
 

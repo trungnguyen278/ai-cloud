@@ -14,8 +14,15 @@ from alembic.migration import MigrationContext
 from sqlalchemy import Column, Connection, Text, inspect, text
 
 from ai_cloud.accounts.db.tables import MIGRATIONS as ACCOUNTS
-from ai_cloud.entry.migrate import migrate, revise
-from ai_cloud.shared.database import DatabaseSettings, create_engine, database_url, metadata
+from ai_cloud.devices.db.tables import MIGRATIONS as DEVICES
+from ai_cloud.entry.migrate import MODULES, migrate, revise
+from ai_cloud.shared.database import (
+    DatabaseSettings,
+    Migrations,
+    create_engine,
+    database_url,
+    metadata,
+)
 
 NAME = "migrations_test"
 
@@ -55,40 +62,68 @@ def fresh(postgres_url: str, settings: DatabaseSettings) -> Iterator[str]:
         admin(f"DROP DATABASE IF EXISTS {NAME} WITH (FORCE)")
 
 
-def _state(connection: Connection) -> tuple[list[str], list[Any], list[str]]:
-    """The accounts' tables, what they lack of what the module declares, and the
+def _state(module: Migrations) -> Callable[[Connection], tuple[list[str], list[Any], list[str]]]:
+    """What reads a module's tables, what they lack of what the module declares, and its
     branch's version."""
-    context = MigrationContext.configure(
-        connection, opts={"include_schemas": True, "version_table_schema": ACCOUNTS.schema}
-    )
-    differences = compare_metadata(context, ACCOUNTS.metadata)
-    tables = sorted(inspect(connection).get_table_names(schema=ACCOUNTS.schema))
-    versions = [
-        row[0] for row in connection.execute(text("SELECT * FROM accounts.alembic_version"))
-    ]
-    return tables, differences, versions
+
+    def own(name: str | None, type_: str, _parents: dict[str, Any]) -> bool:
+        return name == module.schema if type_ == "schema" else True
+
+    def read(connection: Connection) -> tuple[list[str], list[Any], list[str]]:
+        context = MigrationContext.configure(
+            connection,
+            opts={
+                "include_schemas": True,
+                "include_name": own,
+                "version_table_schema": module.schema,
+            },
+        )
+        differences = compare_metadata(context, module.metadata)
+        tables = sorted(inspect(connection).get_table_names(schema=module.schema))
+        versions = [
+            row[0]
+            for row in connection.execute(text(f"SELECT * FROM {module.schema}.alembic_version"))
+        ]
+        return tables, differences, versions
+
+    return read
+
+
+# Each module's tables, and its newest migration.
+NEWEST = {
+    ACCOUNTS.schema: (
+        [
+            "accounts",
+            "alembic_version",
+            "homes",
+            "idempotency_keys",
+            "identities",
+            "invitations",
+            "members",
+            "outbox",
+            "refresh_tokens",
+            "sessions",
+        ],
+        "accounts_0004",
+    ),
+    DEVICES.schema: (
+        ["alembic_version", "challenges", "devices", "idempotency_keys", "keys"],
+        "devices_0001",
+    ),
+}
 
 
 def test_every_module_migrates_to_what_its_tables_declare(
     fresh: str, settings: DatabaseSettings
 ) -> None:
+    assert [module.schema for module in MODULES] == list(NEWEST)
     asyncio.run(migrate(fresh, settings))
-    tables, differences, versions = _on(fresh, settings, _state)
-    assert tables == [
-        "accounts",
-        "alembic_version",
-        "homes",
-        "idempotency_keys",
-        "identities",
-        "invitations",
-        "members",
-        "outbox",
-        "refresh_tokens",
-        "sessions",
-    ]
-    assert differences == []
-    # Its version table is in its own schema, and holds its branch alone.
-    assert versions == ["accounts_0004"]
+    for module in MODULES:
+        tables, differences, versions = _on(fresh, settings, _state(module))
+        assert tables == NEWEST[module.schema][0]
+        assert differences == [], module.schema
+        # Its version table is in its own schema, and holds its branch alone.
+        assert versions == [NEWEST[module.schema][1]]
     assert (
         _on(
             fresh,
@@ -99,7 +134,8 @@ def test_every_module_migrates_to_what_its_tables_declare(
     )
     # Nothing to do the second time.
     asyncio.run(migrate(fresh, settings))
-    assert _on(fresh, settings, _state)[2] == versions
+    for module in MODULES:
+        assert _on(fresh, settings, _state(module))[2] == [NEWEST[module.schema][1]]
 
 
 def test_a_revision_is_written_from_what_the_tables_lack(

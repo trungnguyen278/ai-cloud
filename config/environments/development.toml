@@ -11,3 +11,9 @@ format = "text"
 [accounts.development]
 # Test people sign in without Google or Apple.
 enabled = true
+
+[devices]
+# The address that devices use to reach the cloud, which the app passes on to them at
+# set-up, and which their registrations name: this machine's api, as [api] has it. A device
+# elsewhere on the network takes only an https:// address, which local.toml names.
+server = "http://127.0.0.1:8000"

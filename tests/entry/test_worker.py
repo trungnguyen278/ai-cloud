@@ -55,14 +55,10 @@ async def test_the_worker_relays_and_consumes_until_it_is_stopped(
     async def handle(event: Event) -> None:
         seen.append(event)
 
+    consumer = Consumer("tests.home_deletions", {HomeDeleted.TYPE: handle})
     stop = asyncio.Event()
     running = asyncio.create_task(
-        serve(
-            settings,
-            WorkerSecrets(database, redis_url),
-            stop,
-            consumers=[Consumer("tests.home_deletions", {HomeDeleted.TYPE: handle})],
-        )
+        serve(settings, WorkerSecrets(database, redis_url), stop, consumers=lambda _: [consumer])
     )
     home_id = uuid.uuid7()
     engine = create_engine(database, settings.database, "ai-cloud tests")

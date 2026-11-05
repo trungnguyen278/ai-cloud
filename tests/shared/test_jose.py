@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 import asyncio
+import hashlib
 import json
 import time
 from typing import Any
@@ -18,7 +19,11 @@ from ai_cloud.shared.jose import (
     PublishedKeys,
     SigningKeys,
     TokenError,
+    b64url,
+    b64url_decode,
     new_signing_key,
+    p256_public_key,
+    thumbprint,
 )
 
 TYP = "at+jwt"
@@ -282,3 +287,81 @@ async def test_requests_at_once_fetch_once() -> None:
     found = await asyncio.gather(*(keys.key("one") for _ in range(5)))
     assert {key.key_id for key in found} == {"one"}
     assert provider.requests == 1
+
+
+# The keys that devices carry.
+
+# P-256 (SEC 2, version 2, 2.4.2): its field's prime, and the curve's b; its a is -3.
+P256_PRIME = 2**256 - 2**224 + 2**192 + 2**96 - 1
+P256_B = 0x5AC635D8AA3A93E7B3EBBD55769886BC651D06B0CC53B0F63BCE3C3E27D2604B
+
+
+def p256_jwk(x: int, y: int) -> dict[str, str]:
+    return {"kty": "EC", "crv": "P-256", "x": b64url(x.to_bytes(32)), "y": b64url(y.to_bytes(32))}
+
+
+def small_point() -> tuple[int, int]:
+    """A point of P-256 whose x is so small that x plus the field's prime fits in 32 bytes."""
+    for x in range(1, 100):
+        square = (x**3 - 3 * x + P256_B) % P256_PRIME
+        y = pow(square, (P256_PRIME + 1) // 4, P256_PRIME)  # the prime is 3 modulo 4
+        if y * y % P256_PRIME == square:
+            return x, y
+    raise AssertionError("no point")
+
+
+@pytest.mark.parametrize(
+    ("text", "data"), [("", b""), ("AA", b"\x00"), ("_-8", b"\xff\xef"), ("YWJj", b"abc")]
+)
+def test_base64url_without_padding(text: str, data: bytes) -> None:
+    assert b64url_decode(text) == data
+    assert b64url(data) == text
+
+
+@pytest.mark.parametrize("text", ["AB", "A", "YWJj=", "YW Jj", "a+b/", "\u00e4", "YWJ\n"])
+def test_base64url_is_read_one_way_only(text: str) -> None:
+    with pytest.raises(ValueError, match="not base64url"):
+        b64url_decode(text)
+
+
+def test_a_device_s_key_and_its_thumbprint() -> None:
+    key = ec.generate_private_key(ec.SECP256R1()).public_key()
+    numbers = key.public_numbers()
+    jwk = {**p256_jwk(numbers.x, numbers.y), "kid": "k", "use": "sig"}
+    found, written = p256_public_key(jwk)
+    assert found.public_numbers() == numbers
+    # Only what makes the key.
+    assert written == p256_jwk(numbers.x, numbers.y)
+    # RFC 7638, 3.2: the SHA-256 of {"crv","kty","x","y"}, in that order, without spaces.
+    canonical = json.dumps(
+        {"crv": "P-256", "kty": "EC", "x": written["x"], "y": written["y"]},
+        separators=(",", ":"),
+    )
+    assert thumbprint(written) == b64url(hashlib.sha256(canonical.encode()).digest())
+    assert thumbprint(jwk) == thumbprint(written)
+
+
+@pytest.mark.parametrize(
+    ("jwk", "why"),
+    [
+        (None, "not a P-256 key"),
+        ({"kty": "EC", "crv": "P-384", "x": "AA", "y": "AA"}, "not a P-256 key"),
+        ({"kty": "OKP", "crv": "P-256", "x": "AA", "y": "AA"}, "not a P-256 key"),
+        ({"kty": "EC", "crv": "P-256", "x": 1, "y": 2}, "no coordinates"),
+        ({"kty": "EC", "crv": "P-256", "y": "AA"}, "no coordinates"),
+        ({"kty": "EC", "crv": "P-256", "x": "AA", "y": "AA"}, "wrong size"),
+        ({**p256_jwk(1, 2), "d": "AA"}, "a private key"),
+        (p256_jwk(1, 2), "not a point of the curve"),
+    ],
+)
+def test_what_is_not_a_device_s_key(jwk: Any, why: str) -> None:
+    with pytest.raises(ValueError, match=why):
+        p256_public_key(jwk)
+
+
+def test_a_point_is_written_one_way_only() -> None:
+    x, y = small_point()
+    p256_public_key(p256_jwk(x, y))
+    # The same point, its x written past the field's prime: it would have another thumbprint.
+    with pytest.raises(ValueError, match="not reduced"):
+        p256_public_key(p256_jwk(x + P256_PRIME, y))

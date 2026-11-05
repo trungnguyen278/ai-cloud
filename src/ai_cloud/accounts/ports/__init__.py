@@ -14,13 +14,13 @@ from ai_cloud.accounts.domain.model import (
     FirstAnswer,
     Home,
     HomeView,
-    IdempotencyKey,
     Identity,
     Invitation,
     Member,
     Session,
     SignIn,
 )
+from ai_cloud.shared.app_api import IdempotencyKey
 
 
 @dataclass(frozen=True)

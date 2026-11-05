@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
-"""JOSE: the cloud's own signing keys, and the keys that providers publish
-(docs/decisions/0008-data-and-tokens.md, decision 4).
+"""JOSE: the cloud's own signing keys, the keys that providers publish, and the keys that
+devices carry (docs/decisions/0008-data-and-tokens.md, decision 4).
 
 PyJWT signs and verifies every token; this module finds the key it needs. Errors say
 why a token failed, never what it holds, and never show a key.
 """
 
 import asyncio
+import base64
+import hashlib
 import json
 import logging
 import re
@@ -28,6 +30,12 @@ SIGNING_KEYS_ENV = "AI_CLOUD_SIGNING_KEYS"
 # What signs the cloud's own tokens (docs/decisions/0008-data-and-tokens.md, decision 4).
 ALGORITHM = "ES256"
 _CURVE = "P-256"
+# Bytes in a P-256 coordinate, as a JWK writes it (RFC 7518, 6.2.1.2).
+_COORDINATE = 32
+# The members of an elliptic-curve key that its thumbprint covers, in lexicographic order
+# (RFC 7638, 3.2 and 3.3).
+_EC_THUMBPRINT_MEMBERS = ("crv", "kty", "x", "y")
+_BASE64URL = re.compile(r"[A-Za-z0-9_-]*")
 
 log = logging.getLogger(__name__)
 
@@ -133,6 +141,59 @@ class SigningKeys:
         if decoded["header"].get("typ") != typ:
             raise TokenError("wrong type")
         return decoded["payload"]
+
+
+def b64url(data: bytes) -> str:
+    """Base64url without padding, as JOSE writes binary data (RFC 7515, 2)."""
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def b64url_decode(text: str) -> bytes:
+    """The bytes that ``text`` holds in base64url without padding. ``ValueError`` for
+    anything else: padding, other characters, or bits left over in the last character, which
+    would let two texts stand for the same bytes."""
+    if _BASE64URL.fullmatch(text) is None or len(text) % 4 == 1:
+        raise ValueError("not base64url without padding")
+    data = base64.urlsafe_b64decode(text + "=" * (-len(text) % 4))
+    if b64url(data) != text:
+        raise ValueError("not base64url without padding")
+    return data
+
+
+def p256_public_key(jwk: object) -> tuple[ec.EllipticCurvePublicKey, dict[str, str]]:
+    """The P-256 public key that the JWK ``jwk`` holds (RFC 7518, 6.2.1), and that JWK with
+    its members ``kty``, ``crv``, ``x`` and ``y`` only. ``ValueError`` for anything else:
+    another kind of key, a private one, or coordinates that are not a point of the curve, each
+    written in one way only, so that one key has one thumbprint."""
+    if not isinstance(jwk, Mapping) or jwk.get("kty") != "EC" or jwk.get("crv") != _CURVE:
+        raise ValueError(f"not a {_CURVE} key")
+    if "d" in jwk:
+        raise ValueError("a private key")
+    x, y = jwk.get("x"), jwk.get("y")
+    if not isinstance(x, str) or not isinstance(y, str):
+        raise ValueError("no coordinates")
+    coordinates = b64url_decode(x), b64url_decode(y)
+    if any(len(each) != _COORDINATE for each in coordinates):
+        raise ValueError("coordinates of the wrong size")
+    numbers = ec.EllipticCurvePublicNumbers(
+        int.from_bytes(coordinates[0]), int.from_bytes(coordinates[1]), ec.SECP256R1()
+    )
+    try:
+        key = numbers.public_key()
+    except ValueError:
+        raise ValueError("not a point of the curve") from None
+    # A coordinate past the field's prime names the same point as the one less the prime.
+    if key.public_numbers() != numbers:
+        raise ValueError("coordinates not reduced")
+    return key, {"kty": "EC", "crv": _CURVE, "x": x, "y": y}
+
+
+def thumbprint(jwk: Mapping[str, str]) -> str:
+    """The thumbprint of an elliptic-curve JWK (RFC 7638, 3.2): the SHA-256 of its required
+    members, in lexicographic order and without spaces, in base64url."""
+    members = {name: jwk[name] for name in _EC_THUMBPRINT_MEMBERS}
+    canonical = json.dumps(members, separators=(",", ":"))
+    return b64url(hashlib.sha256(canonical.encode()).digest())
 
 
 def new_signing_key() -> dict[str, str]:

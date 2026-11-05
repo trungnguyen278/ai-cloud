@@ -5,7 +5,6 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from ai_cloud.accounts.domain.errors import InvalidPageToken
 from ai_cloud.accounts.domain.model import (
     DISPLAY_NAME_MAX,
     Invitation,
@@ -20,8 +19,6 @@ from ai_cloud.accounts.domain.model import (
     new_invitation_code,
     new_nonce,
     new_refresh_token,
-    page_after,
-    page_of,
     token_hash,
 )
 from ai_cloud.shared.protocols import protocol_schema
@@ -137,21 +134,3 @@ def test_a_used_code_works_only_for_the_person_it_brought_in() -> None:
     assert not invitation_usable(invitation(later, uuid.uuid7()), asker, moment)
     assert not invitation_usable(invitation(later, asker.id), None, moment)
     assert not invitation_usable(invitation(moment, asker.id), asker, moment)
-
-
-def test_pages() -> None:
-    items = [uuid.uuid7() for _ in range(3)]
-    first = page_of(items, 2, lambda item: item)
-    assert first.items == tuple(items[:2])
-    assert page_after(first.next_page_token) == items[1]
-    last = page_of(items[2:], 2, lambda item: item)
-    assert last.items == (items[2],)
-    assert last.next_page_token == ""
-    assert page_after(None) is None
-    assert page_after("") is None
-
-
-@pytest.mark.parametrize("token", ["*", "abc", "AAAA"])
-def test_a_page_token_no_list_gave_is_refused(token: str) -> None:
-    with pytest.raises(InvalidPageToken):
-        page_after(token)

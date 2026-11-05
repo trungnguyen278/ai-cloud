@@ -2,10 +2,7 @@
 """The app API's homes, the people in them and their invitations
 (platform/protocols/app/README.md, Homes)."""
 
-import hashlib
-import re
 from typing import Any
-from uuid import UUID
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -13,32 +10,26 @@ from fastapi.responses import JSONResponse
 from ai_cloud.accounts.domain.model import (
     HomeChanges,
     HomeView,
-    IdempotencyKey,
     Invitation,
     Member,
     MemberChanges,
     NewHome,
     Role,
 )
-from ai_cloud.accounts.routes.http import (
+from ai_cloud.accounts.routes.http import call
+from ai_cloud.accounts.service import HomesService
+from ai_cloud.shared.app_api import (
     API,
     NO_STORE,
     PROTOCOL,
-    call,
+    idempotency_key,
     instant,
     item_id,
     json_body,
     page_request,
 )
-from ai_cloud.accounts.service import HomesService
-from ai_cloud.shared.problems import Problem
 from ai_cloud.shared.protocols import protocol_schema
 
-# Fixed by the app API (README, Requests): a UUID that the app makes, as a quoted string.
-_IDEMPOTENCY_KEY_HEADER = "idempotency-key"
-_IDEMPOTENCY_KEY = re.compile(
-    r'"([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"'
-)
 _ACCOUNT = "account"  # $defs/member's kind, for a person with an account
 _PROFILE = "profile"  # and for one without
 
@@ -63,8 +54,8 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.get(f"{API}/homes")
     async def list_homes(request: Request, principal: Authenticated) -> Response:
-        page_size, page_token = page_request(request)
-        page = await call(service.homes(principal, page_size, page_token))
+        page_size, after = page_request(request)
+        page = await call(service.homes(principal, page_size, after))
         body = {
             "homes": [_home(view) for view in page.items],
             "next_page_token": page.next_page_token,
@@ -75,7 +66,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
     async def create_home(request: Request, principal: Authenticated) -> Response:
         body = await json_body(request, schemas["home_create"])
         new = NewHome(body["name"], body["time_zone"], tuple(body["languages"]))
-        key = await _idempotency_key(request)
+        key = await idempotency_key(request)
         return _tagged(await call(service.create_home(principal, new, key, _home)), 201)
 
     @routes.get(API + "/homes/{home_id}")
@@ -115,8 +106,8 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.get(API + "/homes/{home_id}/members")
     async def list_members(home_id: str, request: Request, principal: Authenticated) -> Response:
-        page_size, page_token = page_request(request)
-        page = await call(service.members(principal, item_id(home_id), page_size, page_token))
+        page_size, after = page_request(request)
+        page = await call(service.members(principal, item_id(home_id), page_size, after))
         body = {
             "members": [
                 _member(member, current=member.account_id == principal.account_id)
@@ -129,7 +120,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
     @routes.post(API + "/homes/{home_id}/members")
     async def add_profile(home_id: str, request: Request, principal: Authenticated) -> Response:
         body = await json_body(request, schemas["profile_create"])
-        key = await _idempotency_key(request)
+        key = await idempotency_key(request)
         answer = await call(
             service.add_profile(
                 principal,
@@ -172,8 +163,8 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
     async def list_invitations(
         home_id: str, request: Request, principal: Authenticated
     ) -> Response:
-        page_size, page_token = page_request(request)
-        page = await call(service.invitations(principal, item_id(home_id), page_size, page_token))
+        page_size, after = page_request(request)
+        page = await call(service.invitations(principal, item_id(home_id), page_size, after))
         body = {
             "invitations": [_invitation(invitation) for invitation in page.items],
             "next_page_token": page.next_page_token,
@@ -205,15 +196,6 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
         return _tagged(_home(view), 201 if joined else 200)
 
     return routes
-
-
-async def _idempotency_key(request: Request) -> IdempotencyKey:
-    values = request.headers.getlist(_IDEMPOTENCY_KEY_HEADER)
-    found = _IDEMPOTENCY_KEY.fullmatch(values[0]) if len(values) == 1 else None
-    if found is None:
-        raise Problem(400, "Idempotency-Key must be one UUID, as a quoted string")
-    asked = b"\n".join((request.method.encode(), request.url.path.encode(), await request.body()))
-    return IdempotencyKey(UUID(found[1]), hashlib.sha256(asked).digest())
 
 
 def _tagged(body: dict[str, Any], status: int = 200) -> Response:

@@ -40,14 +40,13 @@ from ai_cloud.accounts.domain.model import (
     Home,
     HomeChanges,
     HomeView,
-    IdempotencyKey,
     Invitation,
     InvitationPreview,
     Member,
     MemberChanges,
+    Membership,
     NewHome,
     NewInvitation,
-    Page,
     Principal,
     Role,
     etag_matches,
@@ -55,13 +54,12 @@ from ai_cloud.accounts.domain.model import (
     may_change,
     may_manage,
     new_invitation_code,
-    page_after,
-    page_of,
     token_hash,
 )
 from ai_cloud.accounts.ports import Store, Transaction
 from ai_cloud.accounts.service.common import SignIns, account_of, check_signs_in_to, now
 from ai_cloud.accounts.settings import AccountsSettings
+from ai_cloud.shared.app_api import AppApiSettings, IdempotencyKey, Page, page_of
 from ai_cloud.shared.rates import RateLimiter
 
 log = logging.getLogger(__name__)
@@ -72,6 +70,7 @@ class HomesService:
         self,
         *,
         settings: AccountsSettings,
+        app_api: AppApiSettings,
         store: Store,
         sign_ins: SignIns,
         invitation_rate: RateLimiter,
@@ -80,17 +79,17 @@ class HomesService:
         self._store = store
         self._sign_ins = sign_ins
         self._invitation_rate = invitation_rate
-        self._retention = timedelta(seconds=settings.idempotency_retention)
+        self._retention = timedelta(seconds=app_api.idempotency_retention)
         self._invitation_lifetime = timedelta(seconds=settings.invitation_lifetime)
         self._time_zones = _time_zones()
 
     # Homes.
 
     async def homes(
-        self, principal: Principal, page_size: int, page_token: str | None
+        self, principal: Principal, page_size: int, after: UUID | None
     ) -> Page[HomeView]:
-        """A page of the homes the account is in, oldest first."""
-        after = page_after(page_token)
+        """A page of the homes the account is in, oldest first, from the one after
+        ``after``."""
         async with self._store.transaction() as store:
             found = await store.homes_of(principal.account_id, after=after, limit=page_size + 1)
         return page_of(found, page_size, lambda view: view.home.id)
@@ -139,6 +138,16 @@ class HomesService:
     async def home(self, principal: Principal, home_id: UUID) -> HomeView:
         async with self._store.transaction() as store:
             return await _in_home(store, home_id, principal, lock=False)
+
+    async def membership(self, account_id: UUID, home_id: UUID) -> Membership | None:
+        """The account's person in the home, for the other modules; ``None`` if the account
+        is not in it, or the home does not exist."""
+        async with self._store.transaction() as store:
+            member = await store.member_of_account(home_id, account_id)
+        if member is None:
+            return None
+        assert member.role is not None  # a person with an account has a role
+        return Membership(member.id, member.role, may_manage(member))
 
     async def update_home(
         self, principal: Principal, home_id: UUID, changes: HomeChanges, if_match: str | None
@@ -207,10 +216,10 @@ class HomesService:
     # The people in a home.
 
     async def members(
-        self, principal: Principal, home_id: UUID, page_size: int, page_token: str | None
+        self, principal: Principal, home_id: UUID, page_size: int, after: UUID | None
     ) -> Page[Member]:
-        """A page of the home's people, oldest first, for anyone in it."""
-        after = page_after(page_token)
+        """A page of the home's people, oldest first, from the one after ``after``, for
+        anyone in it."""
         async with self._store.transaction() as store:
             await _in_home(store, home_id, principal, lock=False)
             found = await store.members(home_id, after=after, limit=page_size + 1)
@@ -332,10 +341,10 @@ class HomesService:
         return NewInvitation(invitation, code)
 
     async def invitations(
-        self, principal: Principal, home_id: UUID, page_size: int, page_token: str | None
+        self, principal: Principal, home_id: UUID, page_size: int, after: UUID | None
     ) -> Page[Invitation]:
-        """A page of the home's open invitations, oldest first, without their codes."""
-        after = page_after(page_token)
+        """A page of the home's open invitations, oldest first, from the one after
+        ``after``, without their codes."""
         moment = now()
         async with self._store.transaction() as store:
             view = await _in_home(store, home_id, principal, lock=False)

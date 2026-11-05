@@ -13,12 +13,15 @@ the relay finishes its round, and each consumer the event it handles, within its
 import asyncio
 import logging
 import signal
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import FrameType
 from typing import Self
 
+from sqlalchemy.ext.asyncio import AsyncEngine
+
 from ai_cloud.accounts.api import OUTBOX as ACCOUNTS
+from ai_cloud.devices.api import consumers as devices_consumers
 from ai_cloud.entry.settings import CloudSettings
 from ai_cloud.shared.database import DATABASE_URL_ENV, create_engine, database_url
 from ai_cloud.shared.events import Consumer, Outbox
@@ -32,6 +35,14 @@ APPLICATION_NAME = "ai-cloud worker"  # how its connections appear in PostgreSQL
 
 # Every module's outbox.
 OUTBOXES: tuple[Outbox, ...] = (ACCOUNTS,)
+
+type Consumers = Callable[[AsyncEngine], Sequence[Consumer]]
+
+
+def module_consumers(engine: AsyncEngine) -> list[Consumer]:
+    """Every module's consumers, on the worker's database."""
+    return [*devices_consumers(engine)]
+
 
 # What tells the process to stop. Windows sends no SIGTERM, but Ctrl+Break.
 STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM) + (
@@ -62,17 +73,17 @@ async def serve(
     stop: asyncio.Event,
     *,
     outboxes: Sequence[Outbox] = OUTBOXES,
-    consumers: Sequence[Consumer] = (),
+    consumers: Consumers = module_consumers,
 ) -> None:
-    """Relay the outboxes' events, and run the consumers, until ``stop`` is set. No module
-    consumes another's events yet: each module's consumers join here as it comes."""
+    """Relay the outboxes' events, and run the consumers that ``consumers`` makes, until
+    ``stop`` is set."""
     engine = create_engine(secrets.database_url, settings.database, APPLICATION_NAME)
     redis = create_redis(secrets.redis_url, settings.redis)
     queue = RedisEventQueue(redis)
     try:
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(Relay(engine, queue, outboxes, settings.events).run(stop))
-            for consumer in consumers:
+            for consumer in consumers(engine):
                 tasks.create_task(Subscription(consumer, queue, settings.events).run(stop))
     finally:
         await redis.aclose()
