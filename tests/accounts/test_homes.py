@@ -271,7 +271,7 @@ async def test_a_first_answer_is_kept_for_the_retention_only(cloud) -> None:
     await cloud.sql(
         "UPDATE accounts.idempotency_keys "
         "SET create_time = create_time - make_interval(secs => :seconds)",
-        seconds=cloud.settings.accounts.idempotency_retention + 1,
+        seconds=cloud.settings.app_api.idempotency_retention + 1,
     )
     again = await cloud.http.post("/app/v1/homes", json=HOME, headers=headers)
     assert again.status_code == 201

@@ -51,5 +51,6 @@ def test_a_read_ends_before_redis_s_client_gives_up_on_it() -> None:
 
 
 def test_the_configuration_s_retries_end_well_within_the_retention() -> None:
-    settings = CloudSettings.from_config(load_config("production")).events
+    # Production's table, without what its deployment gives elsewhere.
+    settings = EventsSettings.from_config(load_config("production")["events"])
     assert settings.retry_span() < settings.retention / 2

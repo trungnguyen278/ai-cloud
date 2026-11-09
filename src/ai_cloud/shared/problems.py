@@ -38,11 +38,15 @@ class Problem(Exception):
         self.title = title or HTTPStatus(status).phrase
         self.headers = dict(headers or {})
 
-    def response(self) -> JSONResponse:
+    def body(self) -> dict[str, object]:
+        """The problem as JSON: its type, title and status, and its detail if it has one."""
         body: dict[str, object] = {"type": self.type, "title": self.title, "status": self.status}
         if self.detail:
             body["detail"] = self.detail
-        return JSONResponse(body, self.status, headers=self.headers, media_type=MEDIA_TYPE)
+        return body
+
+    def response(self) -> JSONResponse:
+        return JSONResponse(self.body(), self.status, headers=self.headers, media_type=MEDIA_TYPE)
 
 
 def install(app: FastAPI) -> None:

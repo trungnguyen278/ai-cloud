@@ -31,7 +31,6 @@ from ai_cloud.accounts.domain.model import (
     FirstAnswer,
     Home,
     HomeView,
-    IdempotencyKey,
     Identity,
     Invitation,
     Member,
@@ -39,6 +38,7 @@ from ai_cloud.accounts.domain.model import (
     Session,
 )
 from ai_cloud.accounts.ports import IdentityOwner
+from ai_cloud.shared.app_api import IdempotencyKey
 
 _UNIQUE_VIOLATION = "23505"  # PostgreSQL's SQLSTATE for unique_violation
 _IDENTITY_KEY = "uq_identities_provider_subject"

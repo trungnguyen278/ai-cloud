@@ -17,6 +17,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from ai_cloud.accounts.api import Accounts
+from ai_cloud.devices.api import Devices
 from ai_cloud.entry.settings import CloudSettings
 from ai_cloud.shared import problems
 from ai_cloud.shared.database import DATABASE_URL_ENV, create_engine, database_url
@@ -59,10 +60,14 @@ def create_app(settings: CloudSettings, secrets: ApiSecrets) -> FastAPI:
     accounts = Accounts(
         settings.accounts,
         settings.tokens,
+        settings.app_api,
         keys=secrets.signing_keys,
         engine=engine,
         redis=redis,
         http=http,
+    )
+    devices = Devices(
+        settings.devices, settings.app_api, accounts=accounts, engine=engine, redis=redis
     )
     if accounts.development:
         log.warning("the development provider is on: whoever reaches the api signs in as anyone")
@@ -80,6 +85,7 @@ def create_app(settings: CloudSettings, secrets: ApiSecrets) -> FastAPI:
     problems.install(app)
     app.add_middleware(BodyLimit, limit=settings.api.max_body_size)
     app.include_router(accounts.router)
+    app.include_router(devices.router)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

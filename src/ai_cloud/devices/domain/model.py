@@ -1,0 +1,137 @@
+# SPDX-License-Identifier: MIT
+"""The devices' types and rules, without I/O (ai-platform ADR-0012, and its app API 1.4).
+
+A device belongs to a home, not to the person who added it. What binds it there is the
+cloud's record of its identifier, which it made itself, and of its key, which its
+registration carried. The owner or an admin of the home asks for a challenge, which the
+device signs with that key at set-up, and the app relays: the challenge carries the home,
+which the device never learns, and works once.
+"""
+
+import hashlib
+import secrets
+from dataclasses import dataclass
+from datetime import datetime
+from enum import Enum
+from typing import Any
+from uuid import UUID
+
+# Random bytes in a challenge (the app API's $defs/challenge).
+CHALLENGE_BYTES = 32
+
+
+class Access(Enum):
+    """What a person in a home may do with its devices (the app API's What each role may
+    do): everyone sees them; the owner and admins add and remove them."""
+
+    SEE = "see"
+    MANAGE = "manage"
+
+
+@dataclass(frozen=True)
+class DeviceKey:
+    """A device's public key, as its registration carried it."""
+
+    # Its JWK thumbprint (RFC 7638), which the device's assertions name as their kid.
+    thumbprint: str
+    # The JWK: kty, crv, x and y (RFC 7518, 6.2.1).
+    jwk: dict[str, str]
+
+
+@dataclass(frozen=True)
+class Device:
+    """A device in a home."""
+
+    # The identifier the device made itself (ai-platform ADR-0004).
+    id: UUID
+    home_id: UUID
+    # When it was registered into the home.
+    create_time: datetime
+
+
+@dataclass(frozen=True)
+class Registration:
+    """What a device's registration says, once verified: who the device is, and its key."""
+
+    device_id: UUID
+    key: DeviceKey
+
+
+@dataclass(frozen=True)
+class Challenge:
+    """A challenge to register a device into a home, issued to one account. The cloud keeps
+    its hash, never the challenge itself."""
+
+    home_id: UUID
+    account_id: UUID
+    create_time: datetime
+    expire_time: datetime
+
+
+@dataclass(frozen=True)
+class IssuedChallenge:
+    """What the app gets to register a device: the challenge, the address that devices use,
+    and the seconds the challenge is valid."""
+
+    challenge: str
+    server: str
+    expires_in: int
+
+
+@dataclass(frozen=True)
+class Registered:
+    """A registration the cloud accepted: the device in the home, and whether it is new
+    there, or was there already with this identifier and this key."""
+
+    device: Device
+    new: bool
+
+
+@dataclass(frozen=True)
+class Answer:
+    """What a request was answered, as a retry with its Idempotency-Key gets it again: its
+    status, and its body."""
+
+    status: int
+    body: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class FirstAnswer:
+    """The first answer to a request with an Idempotency-Key, and the SHA-256 of what that
+    request asked."""
+
+    fingerprint: bytes
+    answer: Answer
+
+
+class Binding(Enum):
+    """Where a registration's device stands, against what the cloud holds."""
+
+    # Neither its identifier nor its key is known: it is a new device.
+    NEW = "new"
+    # It is in the home already, with this identifier and this key: one that lost its state.
+    SAME = "same"
+    # It is in another home, or its key or its identifier is another device's.
+    TAKEN = "taken"
+
+
+def binding(home_id: UUID, holder: Device | None, key_holder: UUID | None) -> Binding:
+    """Where a registration into ``home_id`` stands. ``holder`` is the device the cloud holds
+    with the registration's identifier, and ``key_holder`` the identifier of the device that
+    holds its key, if the cloud holds either (ai-platform ADR-0012, decision 5)."""
+    if holder is None and key_holder is None:
+        return Binding.NEW
+    if holder is not None and holder.home_id == home_id and key_holder == holder.id:
+        return Binding.SAME
+    return Binding.TAKEN
+
+
+def new_challenge() -> str:
+    """A challenge: random bytes, base64url without padding."""
+    return secrets.token_urlsafe(CHALLENGE_BYTES)
+
+
+def challenge_hash(challenge: str) -> bytes:
+    """What the cloud keeps of a challenge: its SHA-256."""
+    return hashlib.sha256(challenge.encode()).digest()

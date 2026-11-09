@@ -12,19 +12,14 @@ that is that home's: a person with an account, who has a role, or a profile, who
 signs in. A person joins with an invitation's code, of which the cloud keeps the hash.
 """
 
-import base64
-import binascii
 import hashlib
 import secrets
 import unicodedata
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 from typing import Any
 from uuid import UUID
-
-from ai_cloud.accounts.domain.errors import InvalidPageToken
 
 # Fixed by the app API (platform/protocols/app/schema.json).
 DISPLAY_NAME_MAX = 100  # $defs/display_name, maxLength
@@ -124,15 +119,6 @@ class AccountChanges:
 
 
 @dataclass(frozen=True)
-class Page[T]:
-    """One page of a list."""
-
-    items: tuple[T, ...]
-    # Empty on the last page.
-    next_page_token: str
-
-
-@dataclass(frozen=True)
 class Home:
     id: UUID
     name: str
@@ -208,6 +194,16 @@ class HomeView:
 
 
 @dataclass(frozen=True)
+class Membership:
+    """An account's person in a home, as the other modules see them."""
+
+    member_id: UUID
+    role: Role
+    # Whether they may change the home and what is in it (may_manage).
+    manages: bool
+
+
+@dataclass(frozen=True)
 class Invitation:
     id: UUID
     home_id: UUID
@@ -236,15 +232,6 @@ class InvitationPreview:
     home_name: str
     invited_by: str
     expire_time: datetime
-
-
-@dataclass(frozen=True)
-class IdempotencyKey:
-    """What makes a request's retry recognisable: the key the app gave it, and the SHA-256
-    of what the request asks."""
-
-    key: UUID
-    fingerprint: bytes
 
 
 @dataclass(frozen=True)
@@ -292,7 +279,8 @@ def display_name_for(sign_in: SignIn) -> str | None:
 
 
 def may_manage(member: Member) -> bool:
-    """Whether ``member`` may change the home, invite people and add profiles."""
+    """Whether ``member`` may change the home and what is in it: invite people, add
+    profiles, and add and remove devices (the app API's What each role may do)."""
     return member.role in (Role.OWNER, Role.ADMIN)
 
 
@@ -322,28 +310,6 @@ def etag_matches(if_match: str, etag: str) -> bool:
     """Whether ``If-Match`` names ``etag``: as written, the app API's ETags being compared
     as the cloud gives them; ``*`` matches any."""
     return any(candidate.strip() in ("*", etag) for candidate in if_match.split(","))
-
-
-def page_of[T](found: list[T], page_size: int, identifier: Callable[[T], UUID]) -> Page[T]:
-    """The page that ``found``, read with one item more than ``page_size``, makes."""
-    items = tuple(found[:page_size])
-    more = len(found) > page_size
-    return Page(items, _page_token(identifier(items[-1])) if more else "")
-
-
-def page_after(page_token: str | None) -> UUID | None:
-    """Where the page that ``page_token`` names starts after. ``InvalidPageToken`` for one
-    that no list gave."""
-    if not page_token:
-        return None
-    try:
-        return UUID(bytes=base64.urlsafe_b64decode(page_token + "=" * (-len(page_token) % 4)))
-    except binascii.Error, ValueError:
-        raise InvalidPageToken("the page token is not one this list gave") from None
-
-
-def _page_token(last: UUID) -> str:
-    return base64.urlsafe_b64encode(last.bytes).rstrip(b"=").decode()
 
 
 def _etag(version: int) -> str:

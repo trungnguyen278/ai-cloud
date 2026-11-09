@@ -98,7 +98,9 @@ def test_the_environment_is_required(capsys: pytest.CaptureFixture[str]) -> None
 def test_the_environment_comes_from_the_command_line_or_a_variable(
     monkeypatch: pytest.MonkeyPatch, config_dir: Path, served: list[ApiSettings]
 ) -> None:
-    (config_dir / "local.toml").write_text("[api]\nport = 8123\n", encoding="utf-8")
+    # As a deployment's local.toml has it, with the address its devices use.
+    local = '[api]\nport = 8123\n[devices]\nserver = "https://cloud.example"\n'
+    (config_dir / "local.toml").write_text(local, encoding="utf-8")
     assert main(["api", "--environment", "development", "--config-dir", str(config_dir)]) == 0
     monkeypatch.setenv(ENVIRONMENT_ENV, "production")
     assert main(["api", "--config-dir", str(config_dir)]) == 0

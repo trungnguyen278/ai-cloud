@@ -17,18 +17,18 @@ from ai_cloud.accounts.domain.model import (
     Tokens,
     has_control_characters,
 )
-from ai_cloud.accounts.routes.http import (
+from ai_cloud.accounts.routes.http import call
+from ai_cloud.accounts.service import AccountsService
+from ai_cloud.shared.app_api import (
     API,
     NO_STORE,
     PROTOCOL,
-    call,
     instant,
     item_id,
     json_body,
     media_type,
     page_request,
 )
-from ai_cloud.accounts.service import AccountsService
 from ai_cloud.shared.problems import Problem
 from ai_cloud.shared.protocols import Schema, protocol_schema
 
@@ -164,8 +164,8 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
 
     @routes.get(f"{API}/account/sessions")
     async def list_sessions(request: Request, principal: Authenticated) -> Response:
-        page_size, page_token = page_request(request)
-        page = await call(service.sessions(principal, page_size, page_token))
+        page_size, after = page_request(request)
+        page = await call(service.sessions(principal, page_size, after))
         body = {
             "sessions": [_session(s, current=s.id == principal.session_id) for s in page.items],
             "next_page_token": page.next_page_token,

@@ -19,6 +19,7 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import Connection
 
 from ai_cloud.accounts.api import MIGRATIONS as ACCOUNTS
+from ai_cloud.devices.api import MIGRATIONS as DEVICES
 from ai_cloud.shared.database import (
     MIGRATIONS_ENVIRONMENT,
     DatabaseSettings,
@@ -29,7 +30,7 @@ from ai_cloud.shared.database import (
 APPLICATION_NAME = "ai-cloud migrate"  # how its connection appears in PostgreSQL
 
 # Every module with tables, in the order they migrate.
-MODULES: tuple[Migrations, ...] = (ACCOUNTS,)
+MODULES: tuple[Migrations, ...] = (ACCOUNTS, DEVICES)
 
 log = logging.getLogger(__name__)
 

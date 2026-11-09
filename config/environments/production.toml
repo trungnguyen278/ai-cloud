@@ -4,3 +4,6 @@
 # Every address of its container, so that the other containers reach it over Compose's
 # network.
 host = "0.0.0.0"
+
+# The deployment's own local.toml gives what is its alone, which nothing here may stand in
+# for: [devices] server, the https:// address that its devices reach it at.

@@ -2,12 +2,15 @@
 """What the entry points and the other modules may use of the accounts.
 
 The api process serves ``Accounts.router``; the other modules learn whom a request
-speaks for from ``Accounts.authenticate``; ``ai-cloud migrate`` runs ``MIGRATIONS``.
+speaks for from ``Accounts.authenticate``, and what that account is in a home from
+``Accounts.membership``; ``ai-cloud migrate`` runs ``MIGRATIONS``.
 
 The other modules learn what happened from the accounts' events: ``MemberRemoved``,
 ``HomeDeleted`` and ``AccountDeleted``, each with its ``TYPE`` and its ``from_data``. The
 worker relays them from ``OUTBOX``.
 """
+
+from uuid import UUID
 
 import httpx2
 from redis.asyncio import Redis
@@ -21,10 +24,11 @@ from ai_cloud.accounts.adapters.redis import RedisNonces
 from ai_cloud.accounts.db.tables import MIGRATIONS, OUTBOX
 from ai_cloud.accounts.domain.errors import Unauthenticated
 from ai_cloud.accounts.domain.events import AccountDeleted, HomeDeleted, MemberRemoved
-from ai_cloud.accounts.domain.model import Principal
+from ai_cloud.accounts.domain.model import Membership, Principal, Role
 from ai_cloud.accounts.routes import router
 from ai_cloud.accounts.service import AccountsService, HomesService, SignIns
 from ai_cloud.accounts.settings import AccountsSettings
+from ai_cloud.shared.app_api import AppApiSettings
 from ai_cloud.shared.jose import SigningKeys, TokenSettings
 from ai_cloud.shared.rates import RedisRateLimiter
 
@@ -36,7 +40,9 @@ __all__ = [
     "AccountsSettings",
     "HomeDeleted",
     "MemberRemoved",
+    "Membership",
     "Principal",
+    "Role",
     "Unauthenticated",
 ]
 
@@ -51,6 +57,7 @@ class Accounts:
         self,
         settings: AccountsSettings,
         tokens: TokenSettings,
+        app_api: AppApiSettings,
         *,
         keys: SigningKeys,
         engine: AsyncEngine,
@@ -85,17 +92,24 @@ class Accounts:
             sign_ins=sign_ins,
             development=development,
         )
-        homes = HomesService(
+        self._homes = HomesService(
             settings=settings,
+            app_api=app_api,
             store=store,
             sign_ins=sign_ins,
             invitation_rate=RedisRateLimiter(
                 redis, INVITATION_RATE_PREFIX, settings.invitation_rate
             ),
         )
-        self.router = router(self._service, homes, development=self.development)
+        self.router = router(self._service, self._homes, development=self.development)
 
     async def authenticate(self, access_token: str) -> Principal:
         """The account and session ``access_token`` speaks for; ``Unauthenticated`` if
         it does not verify, or its session has ended."""
         return await self._service.authenticate(access_token)
+
+    async def membership(self, account_id: UUID, home_id: UUID) -> Membership | None:
+        """The account's person in the home: their role, and whether they manage the home.
+        ``None`` if the account is not in it, or the home does not exist: the other modules
+        then answer as if it did not exist (SEC-6)."""
+        return await self._homes.membership(account_id, home_id)
