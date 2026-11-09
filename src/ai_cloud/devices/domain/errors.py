@@ -44,3 +44,13 @@ class IdempotencyKeyBusy(DevicesError):
 
 class IdempotencyKeyReused(DevicesError):
     """This Idempotency-Key was used for another request."""
+
+
+class UnknownDevice(DevicesError):
+    """No device holds the key an assertion names: it was never registered, or was removed
+    or revoked. The device offers set-up."""
+
+
+class AssertionInvalid(DevicesError):
+    """A device's assertion does not verify, or is used again, although the cloud holds its
+    key: the device tries again later."""

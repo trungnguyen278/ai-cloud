@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""What the devices need from outside: their store, and what the accounts know of people."""
+"""What the devices need from outside: their store, the assertions they have seen, and what
+the accounts know of people."""
 
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
@@ -13,6 +14,7 @@ from ai_cloud.devices.domain.model import (
     Device,
     DeviceKey,
     FirstAnswer,
+    HeldKey,
 )
 from ai_cloud.shared.app_api import IdempotencyKey
 
@@ -59,6 +61,10 @@ class Transaction(Protocol):
 
     async def key_holder(self, thumbprint: str) -> UUID | None:
         """The identifier of the device that holds the key with that thumbprint."""
+        ...
+
+    async def device_key(self, thumbprint: str) -> HeldKey | None:
+        """The key with that thumbprint, and the device that holds it."""
         ...
 
     async def devices(self, home_id: UUID, *, after: UUID | None, limit: int) -> list[Device]:
@@ -127,6 +133,16 @@ class Store(Protocol):
 
     def transaction(self) -> AbstractAsyncContextManager[Transaction]:
         """A transaction, committed when the block ends and rolled back if it raises."""
+        ...
+
+
+class Assertions(Protocol):
+    """The assertions that devices have used, for as long as each is valid."""
+
+    async def first_use(self, device_id: UUID, jti: str, until: datetime) -> bool:
+        """Note that the device used the assertion with this ``jti``, until ``until``;
+        whether it had not before. Of two requests with one assertion, one only gets
+        ``True``."""
         ...
 
 

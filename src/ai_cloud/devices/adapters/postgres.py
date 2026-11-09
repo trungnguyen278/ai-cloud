@@ -20,6 +20,7 @@ from ai_cloud.devices.domain.model import (
     Device,
     DeviceKey,
     FirstAnswer,
+    HeldKey,
 )
 from ai_cloud.shared.app_api import IdempotencyKey
 
@@ -86,6 +87,14 @@ class PostgresTransaction:
             select(keys.c.device_id).where(keys.c.thumbprint == thumbprint)
         )
         return found.scalar_one_or_none()
+
+    async def device_key(self, thumbprint: str) -> HeldKey | None:
+        row = (
+            await self._db.execute(
+                select(keys.c.device_id, keys.c.jwk).where(keys.c.thumbprint == thumbprint)
+            )
+        ).one_or_none()
+        return None if row is None else HeldKey(row.device_id, row.jwk)
 
     async def devices(self, home_id: UUID, *, after: UUID | None, limit: int) -> list[Device]:
         query = select(devices).where(devices.c.home_id == home_id)

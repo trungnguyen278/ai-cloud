@@ -34,6 +34,7 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - What a token says before it is verified, such as a registration's challenge, is checked for its form before anything uses it: a lone surrogate in it fails as a `500` where it is hashed or stored. The whole token is verified after.
 - What the cloud keys on, such as a device's key, is read one way only: base64url strictly, without padding or bits left over, and a curve's coordinates below its prime. PyJWT's decoding and `cryptography` both accept more, and one key would have two thumbprints.
 - A request that uses something once, such as a challenge, keeps its answer for a retry whatever it is, a refusal included, in the transaction of the use. One that used nothing keeps nothing.
+- PyJWT checks a token's times with `int()`, which takes the text of a number, and `true`. A claim that the code computes with is checked as a JSON number first.
 
 ### Security and privacy
 

@@ -67,7 +67,13 @@ def create_app(settings: CloudSettings, secrets: ApiSecrets) -> FastAPI:
         http=http,
     )
     devices = Devices(
-        settings.devices, settings.app_api, accounts=accounts, engine=engine, redis=redis
+        settings.devices,
+        settings.app_api,
+        settings.tokens,
+        keys=secrets.signing_keys,
+        accounts=accounts,
+        engine=engine,
+        redis=redis,
     )
     if accounts.development:
         log.warning("the development provider is on: whoever reaches the api signs in as anyone")

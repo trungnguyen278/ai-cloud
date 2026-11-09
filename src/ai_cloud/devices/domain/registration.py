@@ -7,12 +7,11 @@ Errors say which check failed, never what the registration holds.
 """
 
 import re
-from uuid import UUID
 
 import jwt
 
 from ai_cloud.devices.domain.errors import RegistrationInvalid
-from ai_cloud.devices.domain.model import DeviceKey, Registration
+from ai_cloud.devices.domain.model import DeviceKey, Registration, identifier
 from ai_cloud.shared.jose import ALGORITHM, failure, p256_public_key, thumbprint
 
 # Fixed by set-up (platform/protocols/setup/README.md, The registration, and Limits).
@@ -21,8 +20,6 @@ _CHALLENGE = re.compile(r"[A-Za-z0-9_-]{16,128}")  # Limits: challenge
 # The registration's claims: iss and sub, the device's identifier; aud, the server; nonce,
 # the challenge.
 _REQUIRED = ("iss", "sub", "aud", "nonce")
-# A UUID's text, as the protocols write it, in either case (RFC 9562, 4).
-_UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
 
 def challenge_of(registration: str) -> str | None:
@@ -69,9 +66,9 @@ def verify(registration: str, *, audience: str) -> Registration:
         )
     except jwt.PyJWTError as error:
         raise RegistrationInvalid(failure(error)) from None
-    issuer, subject = claims["iss"], claims["sub"]
-    if not all(isinstance(each, str) and _UUID.fullmatch(each) for each in (issuer, subject)):
+    issuer, subject = identifier(claims["iss"]), identifier(claims["sub"])
+    if issuer is None or subject is None:
         raise RegistrationInvalid("iss and sub are not identifiers")
-    if UUID(issuer) != UUID(subject):
+    if issuer != subject:
         raise RegistrationInvalid("iss and sub differ")
-    return Registration(UUID(subject), DeviceKey(thumbprint(jwk), jwk))
+    return Registration(subject, DeviceKey(thumbprint(jwk), jwk))

@@ -9,6 +9,7 @@ which the device never learns, and works once.
 """
 
 import hashlib
+import re
 import secrets
 from dataclasses import dataclass
 from datetime import datetime
@@ -18,6 +19,10 @@ from uuid import UUID
 
 # Random bytes in a challenge (the app API's $defs/challenge).
 CHALLENGE_BYTES = 32
+# A device's identifier, as the protocols write a UUID: in either case (RFC 9562, 4).
+_IDENTIFIER = re.compile(
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}"
+)
 
 
 class Access(Enum):
@@ -47,6 +52,23 @@ class Device:
     home_id: UUID
     # When it was registered into the home.
     create_time: datetime
+
+
+@dataclass(frozen=True)
+class HeldKey:
+    """A key the cloud holds, and the device that holds it."""
+
+    device_id: UUID
+    # The JWK: kty, crv, x and y.
+    jwk: dict[str, str]
+
+
+@dataclass(frozen=True)
+class DeviceToken:
+    """An access token for a device, and the seconds it is valid."""
+
+    access_token: str
+    expires_in: int
 
 
 @dataclass(frozen=True)
@@ -125,6 +147,14 @@ def binding(home_id: UUID, holder: Device | None, key_holder: UUID | None) -> Bi
     if holder is not None and holder.home_id == home_id and key_holder == holder.id:
         return Binding.SAME
     return Binding.TAKEN
+
+
+def identifier(value: object) -> UUID | None:
+    """The device identifier that a token's claim holds, compared as a UUID, whatever the
+    case of its letters; ``None`` for anything else."""
+    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+        return None
+    return UUID(value)
 
 
 def new_challenge() -> str:
