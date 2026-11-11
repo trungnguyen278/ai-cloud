@@ -20,6 +20,12 @@ forwarded_allow_ips = ["127.0.0.1", "::1"]
 # Bytes a request's body may have at most. The app API's largest is an ID token with
 # Apple's code, some 10 KB.
 max_body_size = 65536
+# Seconds the api waits, as it stops, for its requests and connections to end once its
+# devices were asked to connect again, before it cancels what is left. Without a bound, a
+# device that reads nothing would hold the stop without end: its connection never closes.
+# After [devices.link] close_timeout, it leaves room within the 10 s that Docker Compose
+# waits for a container to stop before it kills it (stop_grace_period).
+shutdown_timeout = 3
 
 [logging]
 # The least severe records kept: DEBUG, INFO, WARNING or ERROR.
@@ -101,6 +107,12 @@ max_deliveries = 20
 #
 # Seconds a retry with an Idempotency-Key gets the first answer: 24 hours.
 idempotency_retention = 86_400
+# How deep a body may nest its arrays and objects at most; deeper, the API answers that it
+# is not JSON. RFC 8259 lets a reader limit it (section 9), and the protocol names no depth:
+# its bodies nest a few levels. 64 is .NET's System.Text.Json default (JsonReaderOptions.
+# MaxDepth). Python's json has a limit of its own, which the C stack sets: some 11,000 deep
+# on Windows, more on Linux; this one is the same on every machine.
+max_json_depth = 64
 
 [accounts]
 # Signing in, the account, and homes (ai-platform's app API:
@@ -199,3 +211,32 @@ limit = 60
 period = 60
 # The prefix by which IPv6 addresses count: one host is commonly given a whole /64.
 ipv6_prefix = 64
+
+[devices.link]
+# The devices' control channels (the cloud link's Settings, and
+# docs/decisions/0011-control-channels.md).
+#
+# Seconds the cloud waits for a device's hello: the cloud link's starting point.
+hello_timeout = 5
+# Seconds between a device's pings, which the cloud's hello gives: the cloud link's starting
+# point. The cloud closes a connection from which nothing has come for two of them, or to
+# which nothing could be sent for as long.
+ping_interval = 20
+# What the cloud takes from a device: 50 messages a second, in bursts of 100, and 500 more
+# waiting their turn. The cloud link's starting points for what a device takes from the
+# cloud, which sends it more than it gets.
+rate = 50
+burst = 100
+backlog = 500
+# How deep a device's message may nest its arrays and objects at most; deeper, the cloud
+# cannot read it (REL-4). As [app_api] max_json_depth, and for its reasons: the cloud link
+# names no depth, and its messages nest a few levels.
+max_json_depth = 64
+# Seconds between two checks of a replica's connections against the registry and the
+# presence: the longest that a lost hint delays the bye of a device removed or replaced.
+check_interval = 20
+# Seconds a connection's presence lasts unless its replica keeps it, as Centrifugo's
+# presence_ttl: three checks, so that one late or failed check loses nothing.
+presence_ttl = 60
+# Seconds the cloud waits, when it goes away, for each connection's reconnect to leave.
+close_timeout = 5

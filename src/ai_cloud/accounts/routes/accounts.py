@@ -42,7 +42,9 @@ ISSUED_ACCESS_TOKEN = "urn:ietf:params:oauth:token-type:access_token"  # RFC 869
 log = logging.getLogger(__name__)
 
 
-def account_routes(service: AccountsService, Authenticated: Any, *, development: bool) -> APIRouter:
+def account_routes(
+    service: AccountsService, Authenticated: Any, *, development: bool, max_json_depth: int
+) -> APIRouter:
     """The routes of signing in, sessions and the account; the development provider's too,
     if ``development``. ``Authenticated`` annotates who a request speaks for."""
     schemas = {
@@ -116,7 +118,7 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
 
     @routes.patch(f"{API}/account")
     async def change_account(request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["account_update"])
+        body = await json_body(request, schemas["account_update"], max_json_depth)
         name = body.get("display_name")
         if name is not None and has_control_characters(name):
             raise Problem(400, "display_name: control characters")
@@ -127,7 +129,7 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
 
     @routes.post(f"{API}/account:delete")
     async def delete_account(request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["id_token_request"])
+        body = await json_body(request, schemas["id_token_request"], max_json_depth)
         await call(service.delete_account(principal, body["id_token"]))
         return Response(status_code=204)
 
@@ -135,7 +137,7 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
 
     @routes.post(f"{API}/account/identities")
     async def link_identity(request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["id_token_request"])
+        body = await json_body(request, schemas["id_token_request"], max_json_depth)
         identity = await call(service.link_identity(principal, body["id_token"]))
         return JSONResponse(_identity(identity), 201, headers=NO_STORE)
 
@@ -167,7 +169,7 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
 
         @routes.post(f"{API}/development/id-tokens")
         async def development_id_token(request: Request) -> Response:
-            body = await json_body(request, schemas["development_id_token_request"])
+            body = await json_body(request, schemas["development_id_token_request"], max_json_depth)
             name, email = body["display_name"], body.get("email")
             if has_control_characters(name) or (email and has_control_characters(email)):
                 raise Problem(400, "display_name or email: control characters")

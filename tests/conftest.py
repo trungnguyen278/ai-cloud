@@ -154,7 +154,9 @@ async def make_cloud(
         transport = httpx2.ASGITransport(app=app, client=(ADDRESS, 50000))
         http = httpx2.AsyncClient(transport=transport, base_url="http://cloud.test")
         opened.append((lifespan, http))
-        return Cloud(http, keys=keys, settings=settings, database=database, redis_url=redis_url)
+        return Cloud(
+            http, app=app, keys=keys, settings=settings, database=database, redis_url=redis_url
+        )
 
     yield make
     for lifespan, http in reversed(opened):

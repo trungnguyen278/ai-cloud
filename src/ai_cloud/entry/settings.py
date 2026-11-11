@@ -34,6 +34,10 @@ class ApiSettings(Settings):
     forwarded_allow_ips: list[str]
     # Bytes a request's body may have at most (SEC-15).
     max_body_size: Annotated[int, Field(ge=1)]
+    # Seconds the process waits, as it stops, for its requests and connections to end once
+    # its devices were asked to connect again, before it cancels what is left (uvicorn's
+    # timeout_graceful_shutdown, whole seconds).
+    shutdown_timeout: Annotated[int, Field(ge=1)]
 
 
 class CloudSettings(Settings):

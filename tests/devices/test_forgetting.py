@@ -7,12 +7,13 @@ removal with them, take them in one order."""
 
 import asyncio
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
 
 import pytest
+import redis.asyncio
 from app_api import Cloud, bearer
 from device import Device
 from events_module import EVENTS, until
@@ -65,16 +66,20 @@ def event(kind: Any, **data: str) -> Event:
 
 async def deliver(cloud: Cloud, engine: AsyncEngine) -> None:
     """Hand every event the accounts wrote to the devices' consumers, as the worker would."""
-    handlers = {
-        type_: handler
-        for consumer in consumers(engine)
-        for type_, handler in consumer.handlers.items()
-    }
-    for row in await cloud.sql("SELECT * FROM accounts.outbox ORDER BY seq"):
-        if row.type in handlers:
-            await handlers[row.type](
-                Event(row.id, "/accounts", row.type, row.subject, row.create_time, row.data)
-            )
+    client = redis.asyncio.Redis.from_url(cloud.redis_url)
+    try:
+        handlers = {
+            type_: handler
+            for consumer in consumers(engine, client)
+            for type_, handler in consumer.handlers.items()
+        }
+        for row in await cloud.sql("SELECT * FROM accounts.outbox ORDER BY seq"):
+            if row.type in handlers:
+                await handlers[row.type](
+                    Event(row.id, "/accounts", row.type, row.subject, row.create_time, row.data)
+                )
+    finally:
+        await client.aclose()
 
 
 async def delete_home(cloud: Cloud, tokens: dict[str, Any], home: dict[str, Any]) -> None:
@@ -250,7 +255,7 @@ async def registering(store: Transaction, challenge: str, home_id: UUID, account
     await store.hold_home(home_id)
     assert await store.use_challenge(challenge_hash(challenge), home_id, account_id, now)
     assert await store.add_device(
-        Held(device.id, home_id, now), DeviceKey(device.thumbprint, device.jwk)
+        Held(device.id, home_id, now, None), DeviceKey(device.thumbprint, device.jwk)
     )
     key = IdempotencyKey(uuid.uuid7(), b"what it asked")
     await store.add_first_answer(account_id, key, home_id, device.id, Answer(201, {}), now)
@@ -280,7 +285,9 @@ async def forgotten_while_registering(
     try:
         async with PostgresStore(engine).transaction() as store:
             await registering(store, challenge, home_id, account_id)
-            forgetting = asyncio.create_task(forget(Forgetting(PostgresStore(elsewhere))))
+            forgetting = asyncio.create_task(
+                forget(Forgetting(PostgresStore(elsewhere), Unheard()))
+            )
 
             async def stalled() -> bool:
                 return await waiting(engine)
@@ -348,6 +355,20 @@ class Unlimited:
         return 0.0
 
 
+class Absent:
+    """A presence where no device is connected."""
+
+    async def connected(self, device_ids: Collection[UUID]) -> set[UUID]:
+        return set()
+
+
+class Unheard:
+    """Hints that reach no replica."""
+
+    async def publish(self, device_ids: Collection[UUID]) -> None:
+        pass
+
+
 def forget(forgetting: Forgetting, gone: str, home_id: UUID, account_id: UUID) -> Any:
     """What the devices do once the home, the person's place in it, or the account went."""
     match gone:
@@ -372,10 +393,12 @@ async def test_a_registration_after_its_home_or_account_went_adds_nothing(
         app_api=cloud.settings.app_api,
         store=PostgresStore(engine),
         people=Managing(),
+        presence=Absent(),
+        hints=Unheard(),
         challenge_rate=Unlimited(),
     )
     challenge = await service.issue_challenge(account_id, home_id)
-    await forget(Forgetting(PostgresStore(engine)), gone, home_id, account_id)
+    await forget(Forgetting(PostgresStore(engine), Unheard()), gone, home_id, account_id)
     signed = Device().registration(challenge.challenge, challenge.server)
     with pytest.raises(RegistrationInvalid):
         await service.register(
@@ -400,6 +423,8 @@ async def test_a_removal_waits_for_a_registration_in_its_home(cloud, engine) -> 
         app_api=cloud.settings.app_api,
         store=PostgresStore(elsewhere),
         people=Managing(),
+        presence=Absent(),
+        hints=Unheard(),
         challenge_rate=Unlimited(),
     )
     try:
@@ -450,12 +475,14 @@ async def test_a_challenge_issued_as_its_home_or_person_goes_is_not_kept(
     cloud, engine, gone: str
 ) -> None:
     home_id, account_id = uuid.uuid7(), uuid.uuid7()
-    forgetting = Forgetting(PostgresStore(engine))
+    forgetting = Forgetting(PostgresStore(engine), Unheard())
     service = DevicesService(
         settings=cloud.settings.devices,
         app_api=cloud.settings.app_api,
         store=PostgresStore(engine),
         people=Leaving(lambda: forget(forgetting, gone, home_id, account_id)),
+        presence=Absent(),
+        hints=Unheard(),
         challenge_rate=Unlimited(),
     )
     with pytest.raises(NotFound):
@@ -475,6 +502,8 @@ async def test_a_removal_takes_a_device_s_answers_before_the_device(cloud, engin
         app_api=cloud.settings.app_api,
         store=PostgresStore(elsewhere),
         people=Managing(),
+        presence=Absent(),
+        hints=Unheard(),
         challenge_rate=Unlimited(),
     )
     rows = {"device": device.id}
@@ -539,7 +568,7 @@ async def test_an_owner_s_home_and_account_are_forgotten_at_once(cloud, engine) 
             async with PostgresStore(engine).transaction() as store:
                 for key in keys:
                     device = Device()
-                    held = Held(device.id, home_id, now)
+                    held = Held(device.id, home_id, now, None)
                     await store.add_device(held, DeviceKey(device.thumbprint, device.jwk))
                     await store.add_first_answer(
                         account_id,
@@ -550,10 +579,10 @@ async def test_an_owner_s_home_and_account_are_forgotten_at_once(cloud, engine) 
                         now,
                     )
             ends = await asyncio.gather(
-                Forgetting(PostgresStore(engines[0])).home_deleted(
+                Forgetting(PostgresStore(engines[0]), Unheard()).home_deleted(
                     event(HomeDeleted, home_id=str(home_id))
                 ),
-                Forgetting(PostgresStore(engines[1])).account_deleted(
+                Forgetting(PostgresStore(engines[1]), Unheard()).account_deleted(
                     event(AccountDeleted, account_id=str(account_id))
                 ),
                 return_exceptions=True,
@@ -578,7 +607,7 @@ async def answers_against_their_keys(
         for account_id, key in keys:
             device = Device()
             await store.add_device(
-                Held(device.id, home_id, now), DeviceKey(device.thumbprint, device.jwk)
+                Held(device.id, home_id, now, None), DeviceKey(device.thumbprint, device.jwk)
             )
             await store.add_first_answer(
                 account_id,
@@ -621,7 +650,7 @@ async def test_forgetting_takes_its_rows_in_the_order_of_their_keys(
             # Something holds the answer with the largest key...
             assert await locked_now(holder, answer, key=largest)
             forgetting = asyncio.create_task(
-                forget(Forgetting(PostgresStore(elsewhere)), gone, home_id, account_id)
+                forget(Forgetting(PostgresStore(elsewhere), Unheard()), gone, home_id, account_id)
             )
 
             async def stalled() -> bool:
@@ -649,7 +678,7 @@ async def test_a_home_s_forgetting_takes_the_answers_before_the_devices(cloud, e
             assert await locked_now(holder, answer, key=key)
             deleted = event(HomeDeleted, home_id=str(home_id))
             forgetting = asyncio.create_task(
-                Forgetting(PostgresStore(elsewhere)).home_deleted(deleted)
+                Forgetting(PostgresStore(elsewhere), Unheard()).home_deleted(deleted)
             )
 
             async def stalled() -> bool:

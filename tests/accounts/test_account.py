@@ -99,6 +99,25 @@ async def test_a_lone_surrogate_is_no_text(cloud) -> None:
     problem(broken, 400)
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        pytest.param(b"[" * 20_000 + b"]" * 20_000, id="nested too deep"),
+        # Python reads this on every machine; the configuration's max_json_depth does not.
+        pytest.param(b"[" * 1000 + b"]" * 1000, id="nested past the configured depth"),
+        pytest.param(b'{"display_name": 1e400}', id="a number past a double"),
+    ],
+)
+async def test_json_the_cloud_cannot_read_is_refused(cloud, body: bytes) -> None:
+    tokens = await cloud.sign_in()
+    broken = await cloud.http.patch(
+        "/app/v1/account",
+        content=body,
+        headers={**bearer(tokens), "Content-Type": "application/json"},
+    )
+    assert problem(broken, 400)["detail"] == "the body is not JSON"
+
+
 async def test_linking_another_identity(cloud) -> None:
     tokens = await cloud.sign_in("linh@example.com")
     id_token = await cloud.id_token("linh.work@example.com")

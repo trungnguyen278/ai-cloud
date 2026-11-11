@@ -2,13 +2,27 @@
 """The devices' store, in PostgreSQL (docs/decisions/0008-data-and-tokens.md)."""
 
 import hashlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Collection
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import ColumnElement, Row, Table, delete, func, insert, select, tuple_
+from sqlalchemy import (
+    ColumnElement,
+    Row,
+    Table,
+    Uuid,
+    any_,
+    bindparam,
+    delete,
+    func,
+    insert,
+    select,
+    tuple_,
+    update,
+)
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as upsert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
@@ -17,6 +31,7 @@ from ai_cloud.devices.db.tables import challenges, devices, idempotency_keys, ke
 from ai_cloud.devices.domain.model import (
     Answer,
     Challenge,
+    Description,
     Device,
     DeviceKey,
     FirstAnswer,
@@ -109,6 +124,25 @@ class PostgresTransaction:
         )
         return found.scalar_one()
 
+    async def describe(
+        self, device_id: UUID, registered: datetime, description: Description
+    ) -> bool:
+        described = await self._db.execute(
+            update(devices)
+            .where(devices.c.id == device_id, devices.c.create_time == registered)
+            .values(kind=description.kind, model=description.model, software=description.software)
+        )
+        return described.rowcount == 1
+
+    async def registrations(self, device_ids: Collection[UUID]) -> dict[UUID, datetime]:
+        # One array, however many devices a replica holds: IN would take a parameter for each,
+        # and asyncpg takes 32,767 at most.
+        ids = bindparam("ids", list(device_ids), type_=ARRAY(Uuid))
+        found = await self._db.execute(
+            select(devices.c.id, devices.c.create_time).where(devices.c.id == any_(ids))
+        )
+        return {row.id: row.create_time for row in found}
+
     async def add_device(self, device: Device, key: DeviceKey) -> bool:
         try:
             # A savepoint, so that a conflict leaves the transaction usable.
@@ -151,10 +185,11 @@ class PostgresTransaction:
     # nothing. Then the first answers, then the devices, which their answers would otherwise
     # hold through their foreign key.
 
-    async def forget_home(self, home_id: UUID) -> int:
+    async def forget_home(self, home_id: UUID) -> list[UUID]:
         await self._forget(challenges, challenges.c.home_id == home_id)
         await self._forget(idempotency_keys, idempotency_keys.c.home_id == home_id)
-        return await self._forget(devices, devices.c.home_id == home_id)
+        revoked = await self._forget(devices, devices.c.home_id == home_id)
+        return [device_id for (device_id,) in revoked]
 
     async def forget_member(self, home_id: UUID, account_id: UUID) -> None:
         await self._forget(
@@ -170,19 +205,18 @@ class PostgresTransaction:
         await self._forget(challenges, challenges.c.account_id == account_id)
         await self._forget(idempotency_keys, idempotency_keys.c.account_id == account_id)
 
-    async def _forget(self, table: Table, *where: ColumnElement[bool]) -> int:
+    async def _forget(self, table: Table, *where: ColumnElement[bool]) -> list[tuple[Any, ...]]:
         """Delete the rows of ``table`` that match ``where``, holding them first in the order
-        of their primary key; how many. Two transactions that forget some of the same rows,
-        as an owner's account and its home do at once, then take them in one order, and never
-        wait for each other in a circle. Deleting through an index would take them in that
-        index's order."""
+        of their primary key; the primary keys of those it deleted. Two transactions that
+        forget some of the same rows, as an owner's account and its home do at once, then take
+        them in one order, and never wait for each other in a circle. Deleting through an
+        index would take them in that index's order."""
         key = list(table.primary_key.columns)
         held = await self._db.execute(select(*key).where(*where).order_by(*key).with_for_update())
         rows = [tuple(row) for row in held]
-        if not rows:
-            return 0
-        forgotten = await self._db.execute(delete(table).where(tuple_(*key).in_(rows)))
-        return forgotten.rowcount
+        if rows:
+            await self._db.execute(delete(table).where(tuple_(*key).in_(rows)))
+        return rows
 
     # The first answers to requests with an Idempotency-Key.
 
@@ -257,7 +291,13 @@ def _lock(name: bytes, value: bytes) -> int:
 
 
 def _device(row: Row[Any]) -> Device:
-    return Device(id=row.id, home_id=row.home_id, create_time=row.create_time)
+    described = row.kind is not None and row.model is not None and row.software is not None
+    return Device(
+        id=row.id,
+        home_id=row.home_id,
+        create_time=row.create_time,
+        description=Description(row.kind, row.model, row.software) if described else None,
+    )
 
 
 def _unique_violation(error: IntegrityError) -> bool:

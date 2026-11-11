@@ -76,6 +76,20 @@ async def test_a_new_home_is_checked(cloud, body: dict[str, Any]) -> None:
     assert (await cloud.http.get("/app/v1/homes", headers=bearer(tokens))).json()["homes"] == []
 
 
+async def test_a_body_nests_as_deep_as_the_configuration_says(make_cloud) -> None:
+    cloud = await make_cloud(app_api={"max_json_depth": 1})
+    tokens = await cloud.sign_in()
+    # A home's languages are an array in an object: two levels.
+    refused = await cloud.http.post("/app/v1/homes", json=HOME, headers=once(tokens))
+    assert problem(refused, 400)["detail"] == "the body is not JSON"
+    deep = await cloud.http.post(
+        "/app/v1/homes",
+        content=b"[" * 1000 + b"]" * 1000,
+        headers={**once(tokens), "Content-Type": "application/json"},
+    )
+    assert problem(deep, 400)["detail"] == "the body is not JSON"
+
+
 @pytest.mark.parametrize("zone", ["Asia/Ho_Chi_Minh", "Asia/Saigon", "UTC", "America/New_York"])
 async def test_any_iana_time_zone_will_do(cloud, zone: str) -> None:
     home = await cloud.create_home(await cloud.sign_in(), time_zone=zone)

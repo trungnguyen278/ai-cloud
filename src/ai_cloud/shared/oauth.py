@@ -1,17 +1,20 @@
 # SPDX-License-Identifier: MIT
-"""OAuth 2.0's token endpoints, as the cloud serves them: the form they take, and how they
-answer an error (RFC 6749, 3.2, 5.1 and 5.2). The app's sign-in and the devices' tokens both
-speak it."""
+"""OAuth 2.0 as the cloud speaks it: the form its token endpoints take, how they answer an
+error (RFC 6749, 3.2, 5.1 and 5.2), and the bearer tokens that requests carry (RFC 6750).
+The app's sign-in and API, and the devices' tokens and control channels, all speak it."""
 
 from collections.abc import Mapping
 from urllib.parse import parse_qsl
 
 from fastapi import Request
 from fastapi.responses import JSONResponse
+from starlette.datastructures import Headers
 
 FORM = "application/x-www-form-urlencoded"
 # What answers carrying tokens or personal data say to caches (RFC 6749, 5.1).
 NO_STORE = {"Cache-Control": "no-store", "Pragma": "no-cache"}
+# What a resource answers along with a 401 for its access token (RFC 6750, 3).
+CHALLENGE = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
 class OAuthError(Exception):
@@ -34,6 +37,16 @@ class OAuthError(Exception):
     def response(self) -> JSONResponse:
         body = {"error": self.error, "error_description": self.description}
         return JSONResponse(body, self.status, headers={**NO_STORE, **self.headers})
+
+
+def bearer(headers: Headers) -> str | None:
+    """The access token that a request's Authorization header carries (RFC 6750, 2.1), if it
+    carries one."""
+    scheme, _, token = headers.get("authorization", "").partition(" ")
+    token = token.strip()
+    if scheme.lower() != "bearer" or not token:
+        return None
+    return token
 
 
 def media_type(request: Request) -> str:

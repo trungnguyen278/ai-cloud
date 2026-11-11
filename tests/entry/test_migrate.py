@@ -108,7 +108,7 @@ NEWEST = {
     ),
     DEVICES.schema: (
         ["alembic_version", "challenges", "devices", "idempotency_keys", "keys"],
-        "devices_0001",
+        "devices_0002",
     ),
 }
 

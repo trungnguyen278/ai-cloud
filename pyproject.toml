@@ -34,6 +34,7 @@ dev = [
   "pyyaml>=6.0.3,<7",  # the tests read the images to run from the development Compose file
   "ruff>=0.17,<0.18",  # its rules change with each minor version
   "testcontainers>=4.15,<5",  # PostgreSQL and Redis for the tests, in Docker
+  "websockets>=17.3,<18",  # the tests' devices, on the control channel
 ]
 
 [tool.hatch.build.targets.wheel]

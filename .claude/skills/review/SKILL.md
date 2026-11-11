@@ -35,6 +35,11 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - What the cloud keys on, such as a device's key, is read one way only: base64url strictly, without padding or bits left over, and a curve's coordinates below its prime. PyJWT's decoding and `cryptography` both accept more, and one key would have two thumbprints.
 - A request that uses something once, such as a challenge, keeps its answer for a retry whatever it is, a refusal included, in the transaction of the use. One that used nothing keeps nothing.
 - PyJWT checks a token's times with `int()`, which takes the text of a number, and `true`. A claim that the code computes with is checked as a JSON number first.
+- What a device must hear before its connection closes, such as `reconnect`, is sent before uvicorn's own shutdown, which closes every WebSocket itself before the application's lifespan ends.
+- JSON from outside is read with `read_json`, never `json.loads`, which raises `RecursionError` at a depth that the machine's C stack sets (11,000 on Windows, past 20,000 on Linux: a test of a refusal there must not count on it), not a `ValueError`, and reads `1e400` as an infinity that no `parse_constant` sees. A depth that matters is a setting (`max_json_depth`), the same on every machine.
+- A parsed value is used only once its type is known, or after the schema: `kind in a_set` raises `TypeError` for a list or an object, and `.get` for anything that is no object. A test sends each JSON type where the code reads one.
+- A schema keyword's cost is the library's: jsonschema's `uniqueItems` compares each item with every other when they cannot be sorted, recursively, so `shared/protocols.py` checks it only where `maxItems` and `items` allow the array, and the protocols bound every such array.
+- Whatever a session holds open is bounded, the server's stop included: uvicorn waits for every connection without `[api] shutdown_timeout`, and one whose device reads nothing never closes.
 
 ### Security and privacy
 
@@ -48,6 +53,11 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - Nothing blocks an event loop: file and network I/O are asynchronous, or run in a worker.
 - Transactions lock rows in one order, the one a cascade takes (an account, then its sessions, then their tokens; an account, then a home, then what is in it), so that none deadlocks with a deletion. A row deleted only to tidy up counts: it is held from then on, so it comes after every other lock, or goes to the `worker`. A race the code handles, such as two first sign-ins of one identity, has a test that runs it.
 - A failure in one robot's session never stops another's.
+- What a session keeps for its own use, such as what it has logged once, has a bound that the device cannot raise: fixed keys, never one for each value the device names.
+- A check that refuses new work once a replica goes away is made again after each wait before the work starts, such as the handshake's read of the registry: `going_away` may come during it.
+- What every replica shares about one owner, such as the presence that names a device's newest connection, changes only while it still names the one changing it, by a script that compares and writes at once: a connection that closes late must not take its successor's away.
+- A replica holds what a hint must reach, such as a session, before its last check of the source of truth, so that a change committed after the check is hinted after it. A hint names what to check and carries no verdict, and a check every interval finds what a lost one would have said: Redis's publish and subscribe delivers once at most.
+- A statement that takes a set that grows with use, such as every device a replica holds, takes it as one array (`= ANY`): `IN` spends a parameter on each, and asyncpg takes 32,767 at most.
 - Rows that two transactions may delete at once, such as a home's and its owner's account's, are held in the order of their primary keys (`SELECT … ORDER BY … FOR UPDATE`) before they are deleted. Deleted through two indexes, they are taken in two orders, and deadlock once the tables are large enough that PostgreSQL reads by index. A test holds one of the rows, and looks at what the deletion holds while it waits.
 - What is stored after a check of another module, such as a challenge after the person's role, is checked again once stored: a deletion between the two would leave it behind.
 - A module that forgets what another's deletion took locks none of that module's rows: it first deletes the rows that every change in flight holds, such as its challenges. Read Committed then makes it wait for those changes, and its next statement sees what they added. Tests run both orders: a change in flight, and one that comes after.
@@ -59,7 +69,7 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - A handler is idempotent, and works in any order: a test gives it the same event twice.
 - A handler logs what it changed, and nothing for an event that changed nothing: every worker reads every module's events.
 - What goes to Redis, or another store, as JSON is ASCII, as `json.dumps` writes it by default: a lone surrogate, which a `json` column takes as an escape, cannot be encoded as UTF-8, and would hold up every event behind it.
-- A blocking read, such as Redis's `BLOCK`, ends before the client's own timeout, which would cut it short as if the server had failed: the configuration checks it.
+- A blocking read, such as Redis's `BLOCK`, ends before the client's own timeout, which would cut it short as if the server had failed: the configuration checks it. A read that waits for as long as it takes, such as hints on a channel, says so (`get_message(timeout=None)`), and a test lets it wait longer than the client's timeout.
 - Work that several workers may do on the same rows at once, such as a sweep, first takes its turn, under a transaction-level advisory lock.
 - A check that compares two stores, such as a stream's last place with its outbox's, runs under the lock of the change that could hide the difference, and before that change: a check after the outbox gave new places missed a restored outbox, and lost its events.
 

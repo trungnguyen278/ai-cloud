@@ -251,6 +251,16 @@ async def test_a_registration_is_checked(cloud, body: dict[str, Any]) -> None:
     problem(response, 400)
 
 
+async def test_a_registration_nested_past_the_configured_depth_is_refused(cloud) -> None:
+    family = await cloud.family()
+    response = await cloud.http.post(
+        f"{family.path}/devices",
+        content=b"[" * 1000 + b"]" * 1000,
+        headers={**once(family.owner), "Content-Type": "application/json"},
+    )
+    assert problem(response, 400)["detail"] == "the body is not JSON"
+
+
 async def test_a_registration_needs_an_idempotency_key(cloud) -> None:
     family = await cloud.family()
     issued = await cloud.challenge(family.owner, family.home)

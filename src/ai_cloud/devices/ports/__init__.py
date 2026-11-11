@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
-"""What the devices need from outside: their store, the assertions they have seen, and what
-the accounts know of people."""
+"""What the devices need from outside: their store, the assertions they have seen, what the
+accounts know of people, and, for the control channel, its connections, the presence of the
+devices whose channel is open, and the hints that reach the replica that holds one."""
 
+from collections.abc import AsyncIterator, Collection, Sequence
 from contextlib import AbstractAsyncContextManager
 from datetime import datetime
 from typing import Protocol
@@ -11,6 +13,7 @@ from ai_cloud.devices.domain.model import (
     Access,
     Answer,
     Challenge,
+    Description,
     Device,
     DeviceKey,
     FirstAnswer,
@@ -74,6 +77,17 @@ class Transaction(Protocol):
 
     async def count_devices(self, home_id: UUID) -> int: ...
 
+    async def describe(
+        self, device_id: UUID, registered: datetime, description: Description
+    ) -> bool:
+        """Keep what the device's hello says it is, if it is still under the registration of
+        ``registered``; whether it is."""
+        ...
+
+    async def registrations(self, device_ids: Collection[UUID]) -> dict[UUID, datetime]:
+        """When each of these devices that the registry holds was registered."""
+        ...
+
     async def add_device(self, device: Device, key: DeviceKey) -> bool:
         """Store the device with its key; whether it was stored: ``False`` if another
         transaction stored its identifier or its key first."""
@@ -86,9 +100,9 @@ class Transaction(Protocol):
 
     # What goes with a home, a person's place in it, or an account.
 
-    async def forget_home(self, home_id: UUID) -> int:
+    async def forget_home(self, home_id: UUID) -> list[UUID]:
         """Forget what the devices keep for the home: its challenges, the first answers to
-        requests about it, then its devices with their keys; how many devices it had."""
+        requests about it, then its devices with their keys; the devices it had."""
         ...
 
     async def forget_member(self, home_id: UUID, account_id: UUID) -> None:
@@ -157,4 +171,55 @@ class People(Protocol):
     async def access(self, account_id: UUID, home_id: UUID) -> Access | None:
         """What the account may do with the home's devices; ``None`` if it is not in the
         home, or the home does not exist."""
+        ...
+
+
+class Channel(Protocol):
+    """A device's control channel, once open: a WebSocket today (docs/architecture.md,
+    Modules). Sending on, or closing, a channel that is gone does nothing: what receives from
+    it learns that it is gone."""
+
+    async def receive(self) -> str | bytes | None:
+        """The device's next message: text, or bytes for a binary one; ``None`` once the
+        channel is closed."""
+        ...
+
+    async def send(self, text: str) -> None: ...
+
+    async def close(self, code: int) -> None:
+        """Close the channel with a WebSocket close code (RFC 6455, 7.4)."""
+        ...
+
+
+class Presence(Protocol):
+    """Which connection is each device's newest open one, as every replica of the api sees
+    it. A connection's presence lapses unless the replica that holds it keeps it."""
+
+    async def arrive(self, device_id: UUID, connection: UUID) -> UUID | None:
+        """Note ``connection`` as the device's newest; the connection it replaces, if any."""
+        ...
+
+    async def keep(self, held: Sequence[tuple[UUID, UUID]]) -> set[tuple[UUID, UUID]]:
+        """Keep the presence of these connections, each ``(device, connection)``, noting it
+        again where it lapsed; those that a newer connection of their device replaced."""
+        ...
+
+    async def leave(self, device_id: UUID, connection: UUID) -> None:
+        """Forget ``connection``'s presence, if it is still the device's newest."""
+        ...
+
+    async def connected(self, device_ids: Collection[UUID]) -> set[UUID]:
+        """Those of these devices that have a connection open."""
+        ...
+
+
+class Hints(Protocol):
+    """Hints to the replicas of the api that a device's standing may have changed: removed,
+    revoked, or connected anew. Each may be lost, and arrives at every replica, which checks
+    the device's connections it holds against the registry and the presence."""
+
+    async def publish(self, device_ids: Collection[UUID]) -> None: ...
+
+    def listen(self) -> AsyncIterator[UUID]:
+        """The devices named in hints published from now on, until the listening fails."""
         ...

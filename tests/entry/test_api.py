@@ -3,11 +3,10 @@ from collections.abc import Callable
 from typing import Any
 
 import pytest
-import uvicorn
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from ai_cloud.entry.api import ApiSecrets, create_app, run
+from ai_cloud.entry.api import ApiSecrets, ApiServer, create_app, run
 from ai_cloud.shared.config import ConfigError
 from ai_cloud.shared.jose import SigningKeys
 
@@ -67,19 +66,25 @@ def test_the_development_provider_is_on_where_it_is_configured(
 def test_run_serves_as_the_settings_say(
     monkeypatch: pytest.MonkeyPatch, make_settings: Any, secrets: ApiSecrets
 ) -> None:
-    calls: list[tuple[Any, dict[str, Any]]] = []
-    monkeypatch.setattr(uvicorn, "run", lambda app, **options: calls.append((app, options)))
-    settings = make_settings(api={"host": "192.0.2.1", "forwarded_allow_ips": ["10.0.0.0/8"]})
+    served: list[ApiServer] = []
+    monkeypatch.setattr(ApiServer, "run", lambda server, sockets=None: served.append(server))
+    settings = make_settings(
+        api={"host": "192.0.2.1", "forwarded_allow_ips": ["10.0.0.0/8"], "shutdown_timeout": 7}
+    )
     run(settings, secrets)
-    [(app, options)] = calls
-    assert isinstance(app, FastAPI)
-    assert options == {
-        "host": "192.0.2.1",
-        "port": 8000,
-        "access_log": True,
-        "forwarded_allow_ips": ["10.0.0.0/8"],
-        "log_config": None,
-    }
+    [server] = served
+    config = server.config
+    assert isinstance(config.app, FastAPI)
+    assert config.host == "192.0.2.1"
+    assert config.port == 8000
+    assert config.access_log is True
+    assert config.forwarded_allow_ips == ["10.0.0.0/8"]
+    assert config.log_config is None
+    # A control channel's message has 1 MiB at most, and the cloud link pings on its own.
+    assert config.ws_max_size == 1 << 20
+    assert config.ws_ping_interval is None
+    # A connection that never closes holds the stop no longer than the configuration says.
+    assert config.timeout_graceful_shutdown == 7
 
 
 def test_the_secrets_are_read_and_checked(jwk_set: Callable[[int], str]) -> None:

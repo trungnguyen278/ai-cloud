@@ -12,6 +12,7 @@ import pytest
 from device import Device, b64url_json
 from forge import hs256, public_pem
 
+from ai_cloud.devices.domain import link
 from ai_cloud.devices.domain.errors import RegistrationInvalid
 from ai_cloud.devices.domain.model import (
     Binding,
@@ -44,7 +45,9 @@ def example_registrations() -> list[tuple[str, str]]:
 
 
 def held(device_id: uuid.UUID, home_id: uuid.UUID = HOME) -> Registered:
-    return Registered(id=device_id, home_id=home_id, create_time=datetime.now(UTC))
+    return Registered(
+        id=device_id, home_id=home_id, create_time=datetime.now(UTC), description=None
+    )
 
 
 def test_a_challenge_is_32_random_bytes_kept_as_its_hash() -> None:
@@ -198,3 +201,9 @@ def test_a_refusal_says_nothing_the_registration_holds() -> None:
         verify(registration, audience=SERVER)
     for secret in (challenge, str(device.id), "x.example", device.jwk["x"]):
         assert secret not in str(refused.value)
+
+
+def test_an_error_s_message_is_as_long_as_the_cloud_link_allows() -> None:
+    error = link.error(7, link.Code.INTERNAL, "x" * 2000)
+    assert error == {"type": "error", "reply_to": 7, "code": "internal", "message": "x" * 1024}
+    assert protocol_schema("cloud", "error").problem(error) is None

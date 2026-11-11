@@ -101,7 +101,12 @@ class Accounts:
                 redis, INVITATION_RATE_PREFIX, settings.invitation_rate
             ),
         )
-        self.router = router(self._service, self._homes, development=self.development)
+        self.router = router(
+            self._service,
+            self._homes,
+            development=self.development,
+            max_json_depth=app_api.max_json_depth,
+        )
 
     async def authenticate(self, access_token: str) -> Principal:
         """The account and session ``access_token`` speaks for; ``Unauthenticated`` if

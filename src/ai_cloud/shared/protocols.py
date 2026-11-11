@@ -8,6 +8,7 @@ be a token.
 """
 
 import json
+import math
 import os
 import re
 from collections.abc import Iterator, Mapping
@@ -43,7 +44,82 @@ def _pattern(
         yield ValidationError("does not match the pattern")
 
 
-_Validator = validators.extend(Draft202012Validator, {"pattern": _pattern})
+_UNIQUE_ITEMS = Draft202012Validator.VALIDATORS["uniqueItems"]
+
+
+def _unique_items(
+    validator: Any, unique: bool, instance: Any, schema: Mapping[str, Any]
+) -> Iterator[ValidationError]:
+    """JSON Schema's ``uniqueItems``, on an array that its own schema's ``maxItems`` and
+    ``items`` allow: any other fails those. jsonschema compares items of any type, each with
+    every other when they cannot be sorted, and recursively: 4,000 small objects took 17 s,
+    and items nested 330 deep raised RecursionError (measured 2026-11-12, jsonschema 4.26.0).
+    The tests check that the protocols bound every such array (tests/shared/test_protocols.py).
+    """
+    if not validator.is_type(instance, "array"):
+        return
+    if len(instance) > schema.get("maxItems", len(instance)):
+        return
+    items = schema.get("items")
+    if items is not None and any(
+        next(validator.descend(item, items), None) is not None for item in instance
+    ):
+        return
+    yield from _UNIQUE_ITEMS(validator, unique, instance, schema)
+
+
+_Validator = validators.extend(
+    Draft202012Validator, {"pattern": _pattern, "uniqueItems": _unique_items}
+)
+
+
+def read_json(text: str | bytes, max_depth: int) -> Any:
+    """``text`` as JSON, holding only what the protocols' values may (ai-platform's ADR-0004):
+    ``ValueError`` if it is not JSON, or if it holds
+    - a number that is not finite: NaN and the infinities, which JSON lacks, or one past a
+      double's range, such as ``1e400``, which Python would read as an infinity;
+    - a lone surrogate, which JSON's escapes can spell and UTF-8 cannot: nothing can store it;
+    - arrays and objects nested more than ``max_depth`` deep, which RFC 8259 lets a reader
+      limit (section 9). ``json`` has a limit of its own, which the C stack sets: it raised
+      RecursionError 11,331 deep on Windows, and read 20,000 deep on Linux (measured
+      2026-11-12, Python 3.14.5); ``max_depth`` makes it the same everywhere.
+    """
+    try:
+        value = json.loads(text, parse_constant=_not_finite, parse_float=_finite)
+        if _nests_deeper(value, max_depth):
+            raise RecursionError
+        json.dumps(value, ensure_ascii=False).encode()
+    except RecursionError:
+        raise ValueError("the JSON nests deeper than the cloud reads") from None
+    except UnicodeError:
+        # Its own message names the character or the byte: a value.
+        raise ValueError("the JSON is not Unicode text") from None
+    return value
+
+
+def _nests_deeper(value: Any, depth: int) -> bool:
+    """Whether ``value`` holds an array or an object within ``depth`` others: level by level,
+    for recursion is what the limit keeps the cloud from."""
+    level = [value]
+    for _ in range(depth):
+        level = [
+            child
+            for item in level
+            if isinstance(item, dict | list)
+            for child in (item.values() if isinstance(item, dict) else item)
+        ]
+    return any(isinstance(item, dict | list) for item in level)
+
+
+def _finite(text: str) -> float:
+    number = float(text)
+    if not math.isfinite(number):
+        raise ValueError("a number is past a double's range")
+    return number
+
+
+def _not_finite(_: str) -> Any:
+    raise ValueError("a number is not finite")
 
 
 def platform_dir() -> Path:
