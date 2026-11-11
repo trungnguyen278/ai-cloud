@@ -5,6 +5,7 @@ tests make it sign what a broken or a forged one would."""
 
 import json
 import secrets
+import time
 import uuid
 from typing import Any
 from uuid import UUID
@@ -73,6 +74,40 @@ class Device:
             "jti": secrets.token_urlsafe(16),
             **(claims or {}),
         }
+        return self._signed(head, body, without, signer)
+
+    def assertion(
+        self,
+        audience: str,
+        *,
+        header: dict[str, Any] | None = None,
+        claims: dict[str, Any] | None = None,
+        without: tuple[str, ...] = (),
+        signer: ec.EllipticCurvePrivateKey | None = None,
+    ) -> str:
+        """Its assertion for the token endpoint at ``audience``, as the robot makes one: a JWT
+        signed with ES256 by its key, naming the key's thumbprint, valid for a minute (the
+        cloud link, Tokens from the server)."""
+        issued = int(time.time())
+        head = {"alg": "ES256", "typ": "JWT", "kid": self.thumbprint, **(header or {})}
+        body = {
+            "iss": str(self.id),
+            "sub": str(self.id),
+            "aud": audience,
+            "iat": issued,
+            "exp": issued + 60,
+            "jti": secrets.token_urlsafe(16),
+            **(claims or {}),
+        }
+        return self._signed(head, body, without, signer)
+
+    def _signed(
+        self,
+        head: dict[str, Any],
+        body: dict[str, Any],
+        without: tuple[str, ...],
+        signer: ec.EllipticCurvePrivateKey | None,
+    ) -> str:
         for name in without:
             head.pop(name, None)
             body.pop(name, None)

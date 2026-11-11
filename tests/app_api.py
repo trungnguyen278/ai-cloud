@@ -268,6 +268,22 @@ class Cloud:
         assert response.status_code == 200, response.text
         return conforms(response, "device_list")["devices"]
 
+    @property
+    def token_endpoint(self) -> str:
+        """The URL of the devices' token endpoint, as a device makes it from its server."""
+        return self.settings.devices.server.rstrip("/") + "/device/token"
+
+    async def device_token(self, assertion: str | None, **fields: str) -> httpx2.Response:
+        """Ask the token endpoint for a device's access token, with ``assertion`` (RFC 7523)."""
+        form = {
+            "grant_type": "client_credentials",
+            "client_assertion_type": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+            **fields,
+        }
+        if assertion is not None:
+            form["client_assertion"] = assertion
+        return await self.http.post("/device/token", data=form)
+
     async def sql(self, statement: str, **values: Any) -> list[Any]:
         """Run ``statement`` on the database, for what no request does, such as aging a
         session."""

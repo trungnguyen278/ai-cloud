@@ -6,12 +6,14 @@ from typing import Annotated
 from pydantic import Field
 
 from ai_cloud.shared.config import Settings
-from ai_cloud.shared.rates import RateSettings
+from ai_cloud.shared.rates import AddressRateSettings, RateSettings
 
 # Bounds the app API sets on what the cloud answers (platform/protocols/app/schema.json).
 _SERVER_PATTERN = r"^https?://"  # $defs/device_challenge, server
 _SERVER_MAX = 2048
 _CHALLENGE_RESPONSE_MAX = 3600  # $defs/device_challenge, expires_in
+# And the cloud link (platform/protocols/cloud/schema.json).
+_TOKEN_RESPONSE_MAX = 86400  # $defs/token_response, expires_in
 
 
 class DevicesSettings(Settings):
@@ -24,3 +26,7 @@ class DevicesSettings(Settings):
     challenge_rate: RateSettings
     # How many devices a home may have (devices_per_home).
     devices_per_home: Annotated[int, Field(ge=1)]
+    # Seconds a device's access token is valid (the cloud link's Tokens from the server).
+    access_lifetime: Annotated[int, Field(ge=1, le=_TOKEN_RESPONSE_MAX)]
+    # How many tokens one address may ask for (SEC-15).
+    token_rate: AddressRateSettings

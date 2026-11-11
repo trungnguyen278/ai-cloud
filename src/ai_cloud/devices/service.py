@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
-"""The devices' use cases: challenges, registrations, a home's devices, and what goes when a
-home or an account does (ai-platform ADR-0012, and its app API 1.4).
+"""The devices' use cases: challenges, registrations, a home's devices, the devices' access
+tokens, and what goes when a home or an account does (ai-platform ADR-0012, its app API 1.4,
+and the cloud link 3.0).
 
 A registration and a removal hold their home, as the ports say. A registration uses its
 challenge first of all, and keeps its answer in the same transaction, whatever it is: so a
@@ -9,13 +10,15 @@ challenge.
 """
 
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID
 
 from ai_cloud.accounts.api import AccountDeleted, HomeDeleted, MemberRemoved
-from ai_cloud.devices.domain import registration
+from ai_cloud.devices.domain import assertion, registration
 from ai_cloud.devices.domain.errors import (
+    AssertionInvalid,
     DeviceLimitReached,
     DevicesError,
     DeviceTaken,
@@ -25,6 +28,7 @@ from ai_cloud.devices.domain.errors import (
     RateLimited,
     RegistrationInvalid,
     RoleRequired,
+    UnknownDevice,
 )
 from ai_cloud.devices.domain.model import (
     Access,
@@ -32,22 +36,30 @@ from ai_cloud.devices.domain.model import (
     Binding,
     Challenge,
     Device,
+    DeviceToken,
     IssuedChallenge,
     Registered,
     binding,
     challenge_hash,
+    identifier,
     new_challenge,
 )
-from ai_cloud.devices.ports import People, Store, Transaction
+from ai_cloud.devices.ports import Assertions, People, Store, Transaction
 from ai_cloud.devices.settings import DevicesSettings
 from ai_cloud.shared.app_api import AppApiSettings, IdempotencyKey, Page, page_of
 from ai_cloud.shared.events import Event
-from ai_cloud.shared.rates import RateLimiter
+from ai_cloud.shared.jose import SigningKeys, TokenSettings
+from ai_cloud.shared.rates import RateLimiter, address_subject
 
 log = logging.getLogger(__name__)
 
 # What a registration ends in, once its challenge is used: the device, or why not.
 type Outcome = Registered | RegistrationInvalid | DeviceTaken | DeviceLimitReached
+
+# The devices' access tokens (RFC 9068): for the device's side of the cloud, its control
+# channel. The app's have the audience app, so that neither passes for the other.
+ACCESS_TOKEN_TYPE = "at+jwt"  # RFC 9068, 2.1
+DEVICE_AUDIENCE = "device"
 
 
 def now() -> datetime:
@@ -217,6 +229,78 @@ class DevicesService:
             raise NotFound("no such home among the account's")
         if access is not Access.MANAGE:
             raise RoleRequired("the owner or an admin adds and removes devices")
+
+
+class DeviceTokens:
+    """The token endpoint's use case: a device proves who it is with an assertion that its key
+    signs, and gets an access token for its control channel (the cloud link's Tokens from the
+    server; RFC 7523, 2.2)."""
+
+    def __init__(
+        self,
+        *,
+        settings: DevicesSettings,
+        tokens: TokenSettings,
+        keys: SigningKeys,
+        store: Store,
+        assertions: Assertions,
+        token_rate: RateLimiter,
+    ) -> None:
+        self._settings = settings
+        self._tokens = tokens
+        self._keys = keys
+        self._store = store
+        self._assertions = assertions
+        self._token_rate = token_rate
+        # The token endpoint's URL, as the device makes it from the server it was registered
+        # with: without a trailing slash, then the path.
+        self._audience = settings.server.rstrip("/") + assertion.TOKEN_PATH
+        self._leeway = timedelta(seconds=tokens.leeway)
+
+    async def issue(self, address: str, signed: str, client_id: str | None) -> DeviceToken:
+        """An access token for the device whose key signed ``signed``, asked for from
+        ``address``. ``client_id``, if the request has one, names the same device (RFC 7521,
+        4.2). ``UnknownDevice`` if the cloud holds no such key; ``AssertionInvalid`` if the
+        assertion does not verify, or was used before."""
+        subject = address_subject(address, self._settings.token_rate.ipv6_prefix)
+        wait = await self._token_rate.wait(subject)
+        if wait > 0:
+            raise RateLimited(wait)
+        kid = assertion.key_of(signed)
+        async with self._store.transaction() as store:
+            held = await store.device_key(kid)
+        if held is None:
+            raise UnknownDevice("no device holds this key")
+        asserted = assertion.verify(
+            signed,
+            held.jwk,
+            held.device_id,
+            audience=self._audience,
+            leeway=self._tokens.leeway,
+        )
+        if client_id is not None and identifier(client_id) != held.device_id:
+            raise AssertionInvalid("client_id names another device")
+        # Once it has verified, so that only the device itself can use an assertion up.
+        until = asserted.expire_time + self._leeway
+        if not await self._assertions.first_use(held.device_id, asserted.jti, until):
+            raise AssertionInvalid("this assertion was used before")
+        issued = int(now().timestamp())
+        lifetime = self._settings.access_lifetime
+        device = str(held.device_id)
+        token = self._keys.sign(
+            {
+                "iss": self._tokens.issuer,
+                "sub": device,
+                "aud": DEVICE_AUDIENCE,
+                "client_id": device,
+                "iat": issued,
+                "exp": issued + lifetime,
+                "jti": str(uuid.uuid7()),
+            },
+            typ=ACCESS_TOKEN_TYPE,
+        )
+        log.info("device token issued", extra={"device": device})
+        return DeviceToken(token, lifetime)
 
 
 class Forgetting:

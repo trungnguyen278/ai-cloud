@@ -3,7 +3,6 @@
 
 import logging
 from typing import Any
-from urllib.parse import parse_qsl
 
 from fastapi import APIRouter, Request, Response
 from fastapi.responses import JSONResponse
@@ -19,6 +18,7 @@ from ai_cloud.accounts.domain.model import (
 )
 from ai_cloud.accounts.routes.http import call
 from ai_cloud.accounts.service import AccountsService
+from ai_cloud.shared import oauth
 from ai_cloud.shared.app_api import (
     API,
     NO_STORE,
@@ -26,9 +26,9 @@ from ai_cloud.shared.app_api import (
     instant,
     item_id,
     json_body,
-    media_type,
     page_request,
 )
+from ai_cloud.shared.oauth import OAuthError
 from ai_cloud.shared.problems import Problem
 from ai_cloud.shared.protocols import Schema, protocol_schema
 
@@ -39,23 +39,7 @@ TOKEN_EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"  # RFC 8693, 
 REFRESH = "refresh_token"  # RFC 6749, 6
 ISSUED_ACCESS_TOKEN = "urn:ietf:params:oauth:token-type:access_token"  # RFC 8693, 3
 
-_FORM = "application/x-www-form-urlencoded"
-
 log = logging.getLogger(__name__)
-
-
-class OAuthError(Exception):
-    """An error as the OAuth endpoints answer it."""
-
-    def __init__(self, error: str, description: str, status: int = 400) -> None:
-        super().__init__(description)
-        self.error = error
-        self.description = description
-        self.status = status
-
-    def response(self) -> JSONResponse:
-        body = {"error": self.error, "error_description": self.description}
-        return JSONResponse(body, self.status, headers=NO_STORE)
 
 
 def account_routes(service: AccountsService, Authenticated: Any, *, development: bool) -> APIRouter:
@@ -85,7 +69,7 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
     @routes.post(TOKEN_PATH)
     async def token(request: Request) -> Response:
         try:
-            form = await _form(request)
+            form = await oauth.form(request)
             grant = form.get("grant_type")
             if grant == TOKEN_EXCHANGE:
                 _check_form(schemas["token_exchange_request"], form)
@@ -115,7 +99,7 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
     @routes.post(REVOKE_PATH)
     async def revoke(request: Request) -> Response:
         try:
-            form = await _form(request)
+            form = await oauth.form(request)
             _check_form(schemas["revoke_request"], form)
             await service.revoke(form["token"], form.get("token_type_hint"), form["client_id"])
         except OAuthError as error:
@@ -191,27 +175,6 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
             return JSONResponse({"id_token": id_token}, 201, headers=NO_STORE)
 
     return routes
-
-
-async def _form(request: Request) -> dict[str, str]:
-    """The OAuth endpoint's form fields. A field without a value counts as absent, and
-    none may come twice (RFC 6749, 3.1 and 3.2)."""
-    if media_type(request) != _FORM:
-        raise OAuthError("invalid_request", f"the body must be {_FORM}")
-    body = await request.body()
-    try:
-        pairs = parse_qsl(body.decode(), keep_blank_values=True, strict_parsing=True)
-    except ValueError:  # UnicodeDecodeError included
-        raise OAuthError("invalid_request", "the body is not a form") from None
-    form: dict[str, str] = {}
-    seen: set[str] = set()
-    for name, value in pairs:
-        if name in seen:
-            raise OAuthError("invalid_request", f"{name} is repeated")
-        seen.add(name)
-        if value:
-            form[name] = value
-    return form
 
 
 def _check_form(schema: Schema, form: dict[str, str]) -> None:
