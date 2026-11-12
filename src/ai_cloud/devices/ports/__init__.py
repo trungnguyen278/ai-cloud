@@ -34,6 +34,11 @@ class Transaction(Protocol):
     challenges first. A registration that used one of them has it until it ends, and the
     rest waits for it; one that comes later finds its challenge gone. So nothing that a
     registration racing a deletion keeps outlives it.
+
+    A rename holds its device, and nothing else: whoever deletes the device waits for it, or
+    it finds the device gone. A registration of a device into its home again holds the device
+    last, once its challenge is used, so a deletion waits for the registration at the
+    challenge, before it reaches the device.
     """
 
     async def hold_home(self, home_id: UUID) -> None:
@@ -60,6 +65,15 @@ class Transaction(Protocol):
 
     async def device(self, device_id: UUID) -> Device | None:
         """The device with that identifier, in whatever home."""
+        ...
+
+    async def hold_device(self, device_id: UUID) -> Device | None:
+        """The device with that identifier, in whatever home, held until the transaction
+        ends: another that changes it waits for this one."""
+        ...
+
+    async def save_name(self, device: Device) -> None:
+        """Keep the device's name and its version."""
         ...
 
     async def key_holder(self, thumbprint: str) -> UUID | None:

@@ -1,13 +1,17 @@
 # SPDX-License-Identifier: MIT
-"""The devices' use cases: challenges, registrations, a home's devices, the devices' access
-tokens, and what goes when a home or an account does (ai-platform ADR-0012, its app API 1.4,
-and the cloud link 3.0). A device removed, or gone with its home, is hinted at, so that its
-control channel ends (docs/decisions/0011-control-channels.md).
+"""The devices' use cases: challenges, registrations, a home's devices and their names, the
+devices' access tokens, and what goes when a home or an account does (ai-platform ADR-0012 and
+ADR-0013, its app API 1.5, and the cloud link 3.0). A device removed, or gone with its home,
+is hinted at, so that its control channel ends (docs/decisions/0011-control-channels.md).
 
 A registration and a removal hold their home, as the ports say. A registration uses its
 challenge first of all, and keeps its answer in the same transaction, whatever it is: so a
 challenge works once, a retry gets the first answer, and nothing is tried twice on one
 challenge.
+
+A rename publishes no domain event, as the accounts' renames do not: no other module acts on
+a device's name, and an event's data holds no personal data
+(docs/decisions/0009-domain-events.md).
 """
 
 import logging
@@ -26,6 +30,7 @@ from ai_cloud.devices.domain.errors import (
     IdempotencyKeyBusy,
     IdempotencyKeyReused,
     NotFound,
+    PreconditionFailed,
     RateLimited,
     RegistrationInvalid,
     RoleRequired,
@@ -46,11 +51,14 @@ from ai_cloud.devices.domain.model import (
     binding,
     challenge_hash,
     identifier,
+    named_again,
     new_challenge,
+    renamed,
 )
 from ai_cloud.devices.ports import Assertions, Hints, People, Presence, Store, Transaction
 from ai_cloud.devices.settings import DevicesSettings
 from ai_cloud.shared.app_api import AppApiSettings, IdempotencyKey, Page, page_of
+from ai_cloud.shared.etags import etag_matches
 from ai_cloud.shared.events import Event
 from ai_cloud.shared.jose import SigningKeys, TokenError, TokenSettings
 from ai_cloud.shared.rates import RateLimiter, address_subject
@@ -118,7 +126,7 @@ class DevicesService:
         wait = await self._challenge_rate.wait(str(account_id))
         if wait > 0:
             raise RateLimited(wait)
-        await self._check_manages(account_id, home_id)
+        await self._check_manages(account_id, home_id, "adds devices")
         challenge = new_challenge()
         hashed = challenge_hash(challenge)
         moment = now()
@@ -129,7 +137,7 @@ class DevicesService:
         # in it, or of the account, that came since the first check finds the challenge, or
         # comes before this one, which forgets it: none outlives what it was issued for.
         try:
-            await self._check_manages(account_id, home_id)
+            await self._check_manages(account_id, home_id, "adds devices")
         except DevicesError:
             async with self._store.transaction() as store:
                 await store.forget_challenge(hashed)
@@ -144,11 +152,13 @@ class DevicesService:
         account_id: UUID,
         home_id: UUID,
         signed: str,
+        name: str | None,
         key: IdempotencyKey,
         answer: Callable[[Outcome], Answer],
     ) -> Answer:
-        """Register the device that signed ``signed`` into the home, and give what ``answer``
-        makes of the outcome: the first answer again, for a retry."""
+        """Register the device that signed ``signed`` into the home, with the name it gives
+        itself, if the app sent one; and give what ``answer`` makes of the outcome: the first
+        answer again, for a retry."""
         access = await self._people.access(account_id, home_id)
         if access is None:
             raise NotFound("no such home among the account's")
@@ -169,7 +179,7 @@ class DevicesService:
             # The challenge is used, whatever follows: the answer is kept with it.
             outcome: Outcome
             try:
-                outcome = await self._bind(store, home_id, signed, moment)
+                outcome = await self._bind(store, home_id, signed, name, moment)
             except (RegistrationInvalid, DeviceTaken, DeviceLimitReached) as refusal:
                 outcome = refusal
             given = answer(outcome)
@@ -204,10 +214,27 @@ class DevicesService:
             raise NotFound("no such device in the home")
         return await self._shown(device)
 
+    async def rename(
+        self, account_id: UUID, home_id: UUID, device_id: UUID, name: str, if_match: str | None
+    ) -> Shown:
+        """Rename one of the home's devices, for the owner or an admin, if ``if_match`` names
+        its ETag, or is ``None``."""
+        await self._check_manages(account_id, home_id, "renames devices")
+        async with self._store.transaction() as store:
+            device = await store.hold_device(device_id)
+            if device is None or device.home_id != home_id:
+                raise NotFound("no such device in the home")
+            if if_match is not None and not etag_matches(if_match, device.etag):
+                raise PreconditionFailed("the device changed since that ETag")
+            device = renamed(device, name)
+            await store.save_name(device)
+        log.info("device renamed", extra={"home": str(home_id), "device": str(device_id)})
+        return await self._shown(device)
+
     async def remove(self, account_id: UUID, home_id: UUID, device_id: UUID) -> None:
         """Remove a device from the home, which revokes it, for the owner or an admin: the
         cloud forgets its key."""
-        await self._check_manages(account_id, home_id)
+        await self._check_manages(account_id, home_id, "removes devices")
         async with self._store.transaction() as store:
             await store.hold_home(home_id)
             if not await store.remove_device(home_id, device_id):
@@ -219,22 +246,33 @@ class DevicesService:
     # Helpers.
 
     async def _bind(
-        self, store: Transaction, home_id: UUID, signed: str, moment: datetime
+        self, store: Transaction, home_id: UUID, signed: str, name: str | None, moment: datetime
     ) -> Registered:
-        """The device that signed the registration, in the home: as it was, or new there."""
+        """The device that signed the registration, in the home: as it was, or new there with
+        ``name``."""
         verified = registration.verify(signed, audience=self._settings.server)
         holder = await store.device(verified.device_id)
         placed = binding(home_id, holder, await store.key_holder(verified.key.thumbprint))
         if placed is Binding.TAKEN:
             raise DeviceTaken("the cloud holds its identifier or its key elsewhere")
         if placed is Binding.SAME:
-            assert holder is not None
-            return Registered(await self._shown(holder), new=False)
+            # Held, for a rename may race this: removing it, or its home, waits for the challenge.
+            held = await store.hold_device(verified.device_id)
+            assert held is not None
+            if (named := named_again(held, name)) is not None:
+                held = named
+                await store.save_name(held)
+            return Registered(await self._shown(held), new=False)
         # The limit counts new devices only: a full home takes back one that lost its state.
         if await store.count_devices(home_id) >= self._settings.devices_per_home:
             raise DeviceLimitReached(f"a home has {self._settings.devices_per_home} at most")
         device = Device(
-            id=verified.device_id, home_id=home_id, create_time=moment, description=None
+            id=verified.device_id,
+            home_id=home_id,
+            create_time=moment,
+            description=None,
+            name=name,
+            version=1,
         )
         if not await store.add_device(device, verified.key):
             raise DeviceTaken("another registration took its identifier or its key meanwhile")
@@ -258,12 +296,13 @@ class DevicesService:
             raise IdempotencyKeyReused("this key was used for another request")
         return first.answer
 
-    async def _check_manages(self, account_id: UUID, home_id: UUID) -> None:
+    async def _check_manages(self, account_id: UUID, home_id: UUID, does: str) -> None:
+        """That the account may manage the home's devices: the owner or an admin ``does``."""
         access = await self._people.access(account_id, home_id)
         if access is None:
             raise NotFound("no such home among the account's")
         if access is not Access.MANAGE:
-            raise RoleRequired("the owner or an admin adds and removes devices")
+            raise RoleRequired(f"the owner or an admin {does}")
 
 
 class DeviceTokens:

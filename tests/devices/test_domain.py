@@ -18,7 +18,9 @@ from ai_cloud.devices.domain.model import (
     Binding,
     binding,
     challenge_hash,
+    named_again,
     new_challenge,
+    renamed,
 )
 from ai_cloud.devices.domain.model import Device as Registered
 from ai_cloud.devices.domain.registration import challenge_of, verify
@@ -27,6 +29,7 @@ from ai_cloud.shared.protocols import platform_dir, protocol_schema
 
 SERVER = "https://cloud.example"
 HOME = uuid.uuid7()
+REGISTERED = datetime(2026, 11, 5, 9, 0, 3, tzinfo=UTC)
 
 
 def example_registrations() -> list[tuple[str, str]]:
@@ -44,9 +47,16 @@ def example_registrations() -> list[tuple[str, str]]:
     return found
 
 
-def held(device_id: uuid.UUID, home_id: uuid.UUID = HOME) -> Registered:
+def held(
+    device_id: uuid.UUID, home_id: uuid.UUID = HOME, name: str | None = "Robot", version: int = 1
+) -> Registered:
     return Registered(
-        id=device_id, home_id=home_id, create_time=datetime.now(UTC), description=None
+        id=device_id,
+        home_id=home_id,
+        create_time=REGISTERED,
+        description=None,
+        name=name,
+        version=version,
     )
 
 
@@ -69,6 +79,21 @@ def test_where_a_registration_s_device_stands() -> None:
     assert binding(HOME, held(device), None) is Binding.TAKEN
     # Its key, another device's.
     assert binding(HOME, None, other) is Binding.TAKEN
+
+
+def test_a_device_s_name_and_its_etag() -> None:
+    device = held(uuid.uuid7(), version=4)
+    assert device.etag == 'W/"4"'
+    # Renaming changes its version, and its ETag with it, whatever the name was.
+    assert renamed(device, "Bi") == held(device.id, name="Bi", version=5)
+    assert renamed(held(device.id, name=None), "Bi").name == "Bi"
+    # Registered again into its home, it keeps the name it has, and takes the registration's
+    # only if it has none: an app of 1.4 sends none.
+    assert named_again(device, "Robot 2") is None
+    assert named_again(device, None) is None
+    assert named_again(held(device.id, name=None), None) is None
+    taken = named_again(held(device.id, name=None, version=4), "Robot")
+    assert taken == held(device.id, name="Robot", version=5)
 
 
 def test_the_example_s_registrations_verify() -> None:

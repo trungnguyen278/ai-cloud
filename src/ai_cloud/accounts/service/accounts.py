@@ -32,7 +32,6 @@ from ai_cloud.accounts.domain.model import (
     Session,
     Tokens,
     display_name_for,
-    etag_matches,
     new_nonce,
     new_refresh_token,
     token_hash,
@@ -42,6 +41,7 @@ from ai_cloud.accounts.service.common import SignIns, account_of, check_signs_in
 from ai_cloud.accounts.service.homes import remove_from_homes
 from ai_cloud.accounts.settings import AccountsSettings
 from ai_cloud.shared.app_api import Page, page_of
+from ai_cloud.shared.etags import etag_matches
 from ai_cloud.shared.jose import SigningKeys, TokenError, TokenSettings
 from ai_cloud.shared.protocols import protocol_schema
 from ai_cloud.shared.rates import RateLimiter, address_subject

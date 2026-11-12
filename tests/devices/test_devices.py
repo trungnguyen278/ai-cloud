@@ -8,9 +8,10 @@ import uuid
 from typing import Any
 
 import pytest
-from app_api import Cloud, bearer, conforms, once, problem
+from app_api import DEVICE_NAME, Cloud, bearer, conforms, once, problem
 from device import Device
 from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ai_cloud.devices.adapters.postgres import home_lock, idempotency_lock
 from ai_cloud.shared.database import create_engine
@@ -18,6 +19,8 @@ from ai_cloud.shared.database import create_engine
 pytestmark = pytest.mark.anyio
 
 # Enough challenges and nonces for the tests that ask for many.
+# The tests' own connection, which holds what the api waits for.
+RENAMING = "ai-cloud tests renaming"
 PLENTY = {"accounts": {"nonce_rate": {"limit": 100}}, "devices": {"challenge_rate": {"limit": 100}}}
 
 
@@ -27,6 +30,17 @@ async def registered(cloud: Cloud) -> list[Any]:
         "SELECT d.id, d.home_id, k.thumbprint, k.jwk FROM devices.devices d "
         "JOIN devices.keys k ON k.device_id = d.id ORDER BY d.id"
     )
+
+
+async def waiting(engine: AsyncEngine) -> bool:
+    """Whether the api waits for a lock that a connection of ``engine`` holds."""
+    async with engine.connect() as connection:
+        found = await connection.exec_driver_sql(
+            "SELECT count(*) FROM pg_stat_activity "
+            "WHERE datname = current_database() AND wait_event_type = 'Lock' "
+            f"AND application_name <> '{RENAMING}'"
+        )
+        return found.scalar_one() > 0
 
 
 async def first_answers(cloud: Cloud) -> int:
@@ -101,8 +115,11 @@ async def test_registering_a_device(cloud) -> None:
     assert response.headers["cache-control"] == "no-store"
     body = conforms(response, "device")
     assert body["id"] == str(device.id)
+    # The name the device gives itself, which the app relays with its registration.
+    assert body["name"] == DEVICE_NAME
     assert body["connected"] is False
-    assert set(body) == {"id", "connected", "create_time"}
+    assert body["etag"] == response.headers["etag"] == 'W/"1"'
+    assert set(body) == {"id", "name", "connected", "create_time", "etag"}
     [row] = await registered(cloud)
     assert (str(row.id), str(row.home_id)) == (str(device.id), family.home["id"])
     assert (row.thumbprint, row.jwk) == (device.thumbprint, device.jwk)
@@ -113,6 +130,23 @@ async def test_registering_a_device(cloud) -> None:
         assert await cloud.devices(person, family.home) == [body]
         read = await cloud.http.get(f"{family.path}/devices/{device.id}", headers=bearer(person))
         assert conforms(read, "device") == body
+        assert read.headers["etag"] == 'W/"1"'
+
+
+async def test_a_device_registered_by_an_app_of_1_4_has_no_name(cloud) -> None:
+    family = await cloud.family()
+    added = await cloud.add_device(family.owner, family.home, Device(), name=None)
+    assert "name" not in added
+    assert added["etag"] == 'W/"1"'
+    assert await cloud.devices(family.member, family.home) == [added]
+
+
+async def test_two_devices_of_a_home_may_share_a_name(cloud) -> None:
+    family = await cloud.family()
+    first = await cloud.add_device(family.owner, family.home, Device())
+    second = await cloud.add_device(family.owner, family.home, Device())
+    assert first["name"] == second["name"] == DEVICE_NAME
+    assert len(await cloud.devices(family.owner, family.home)) == 2
 
 
 async def test_a_retry_gets_the_first_answer(cloud) -> None:
@@ -124,10 +158,33 @@ async def test_a_retry_gets_the_first_answer(cloud) -> None:
     assert first.status_code == 201
     retry = await cloud.register(family.owner, family.home, registration, key)
     assert (retry.status_code, retry.content) == (201, first.content)
+    assert retry.headers["etag"] == 'W/"1"'
+    # With another name, it is another request.
+    other = await cloud.register(family.owner, family.home, registration, key, name="Bi")
+    problem(other, 422)
     # The same registration under another key: its challenge is used.
     again = await cloud.register(family.owner, family.home, registration)
     problem(again, 400, "registration_invalid")
     assert len(await cloud.devices(family.owner, family.home)) == 1
+
+
+async def test_a_first_answer_that_the_api_1_4_gave_is_given_as_it_was(cloud) -> None:
+    family = await cloud.family()
+    issued = await cloud.challenge(family.owner, family.home)
+    registration = Device().registration(issued["challenge"], issued["server"])
+    key = once(family.owner)["Idempotency-Key"]
+    first = await cloud.register(family.owner, family.home, registration, key)
+    # As the cloud kept it before the device had a name and an ETag.
+    await cloud.sql(
+        "UPDATE devices.idempotency_keys SET answer = (answer::jsonb - 'name' - 'etag')::json"
+    )
+    retry = await cloud.register(family.owner, family.home, registration, key)
+    assert retry.status_code == 201, retry.text
+    assert retry.json() == {
+        name: value for name, value in first.json().items() if name not in ("name", "etag")
+    }
+    assert "etag" not in retry.headers
+    assert retry.headers["cache-control"] == "no-store"
 
 
 async def test_a_refusal_after_the_challenge_is_used_is_kept_too(cloud) -> None:
@@ -389,6 +446,39 @@ async def test_the_same_device_registers_again_in_its_home(cloud) -> None:
     assert again.status_code == 200, again.text
     assert conforms(again, "device") == added
     assert len(await registered(cloud)) == 1
+    # It keeps the name it has in the home, which the owner gave it.
+    path = f"{family.path}/devices/{device.id}"
+    named = conforms(
+        await cloud.http.patch(path, json=NAMED, headers=bearer(family.owner)), "device"
+    )
+    issued = await cloud.challenge(family.owner, family.home)
+    again = await cloud.register(
+        family.owner, family.home, device.registration(issued["challenge"], issued["server"])
+    )
+    assert again.status_code == 200, again.text
+    assert conforms(again, "device") == named
+    assert again.headers["etag"] == 'W/"2"'
+
+
+async def test_a_device_without_a_name_takes_the_one_it_registers_again_with(cloud) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device, name=None)
+    for name, etag in ((None, 'W/"1"'), ("Bi", 'W/"2"'), ("Robot", 'W/"2"')):
+        issued = await cloud.challenge(family.owner, family.home)
+        again = await cloud.register(
+            family.owner,
+            family.home,
+            device.registration(issued["challenge"], issued["server"]),
+            name=name,
+        )
+        assert again.status_code == 200, again.text
+        # Without a name, it has none still; with one, it takes the first, and keeps it.
+        assert conforms(again, "device") == {
+            **added,
+            **({} if etag == 'W/"1"' else {"name": "Bi"}),
+            "etag": etag,
+        }
 
 
 async def test_a_device_in_another_home_is_taken(cloud) -> None:
@@ -556,6 +646,162 @@ async def test_reading_a_device_of_the_home(cloud) -> None:
             f"{family.path}/devices/{device_id}", headers=bearer(family.owner)
         )
         problem(missing, 404)
+
+
+# Naming a device.
+
+NAMED = {"name": "Bi"}
+
+
+async def test_renaming_a_device(cloud) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device)
+    path = f"{family.path}/devices/{device.id}"
+    renamed = await cloud.http.patch(
+        path, json=NAMED, headers={**bearer(family.owner), "If-Match": added["etag"]}
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.headers["cache-control"] == "no-store"
+    body = conforms(renamed, "device")
+    assert body == {**added, "name": "Bi", "etag": 'W/"2"'}
+    assert renamed.headers["etag"] == 'W/"2"'
+    # Everyone in the home sees it.
+    assert await cloud.devices(family.member, family.home) == [body]
+    # An admin renames it too; without If-Match, whatever it is now.
+    again = await cloud.http.patch(path, json={"name": "Bi"}, headers=bearer(family.admin))
+    assert conforms(again, "device") == {**body, "etag": 'W/"3"'}
+
+
+async def test_a_rename_with_an_old_etag_changes_nothing(cloud) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device)
+    path = f"{family.path}/devices/{device.id}"
+    await cloud.http.patch(path, json=NAMED, headers=bearer(family.admin))
+    stale = await cloud.http.patch(
+        path, json={"name": "Su"}, headers={**bearer(family.owner), "If-Match": added["etag"]}
+    )
+    problem(stale, 412)
+    read = await cloud.http.get(path, headers=bearer(family.owner))
+    assert conforms(read, "device")["name"] == "Bi"
+    # Any of the ETags it names, or any at all.
+    for if_match in ('W/"9", W/"2"', "*"):
+        response = await cloud.http.patch(
+            path, json={"name": "Su"}, headers={**bearer(family.owner), "If-Match": if_match}
+        )
+        assert response.status_code == 200, response.text
+
+
+async def test_a_device_registering_again_while_it_is_renamed_keeps_the_new_name(
+    cloud,
+) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device, name=None)
+    issued = await cloud.challenge(family.owner, family.home)
+    registration = device.registration(issued["challenge"], issued["server"])
+    engine = create_engine(cloud.database, cloud.settings.database, RENAMING)
+    try:
+        async with engine.begin() as renaming:
+            # A rename in flight holds the device.
+            await renaming.execute(
+                text("UPDATE devices.devices SET name = 'Bi', version = 2 WHERE id = :id"),
+                {"id": device.id},
+            )
+            again = asyncio.create_task(cloud.register(family.owner, family.home, registration))
+            async with asyncio.timeout(5):
+                while not await waiting(engine):
+                    await asyncio.sleep(0.02)
+        response = await again
+    finally:
+        await engine.dispose()
+    assert response.status_code == 200, response.text
+    # It reads the name once the rename is done, and keeps it.
+    assert conforms(response, "device") == {**added, "name": "Bi", "etag": 'W/"2"'}
+
+
+async def test_only_the_owner_and_admins_rename_devices(cloud) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device)
+    path = f"{family.path}/devices/{device.id}"
+    member = await cloud.http.patch(path, json=NAMED, headers=bearer(family.member))
+    problem(member, 403, "role_required")
+    problem(await cloud.http.patch(path, json=NAMED, headers=bearer(family.outsider)), 404)
+    assert await cloud.devices(family.owner, family.home) == [added]
+
+
+async def test_renaming_what_the_home_does_not_hold_finds_nothing(cloud) -> None:
+    family = await cloud.family()
+    other = await cloud.create_home(family.owner, name="Nhà khác")
+    elsewhere = Device()
+    added = await cloud.add_device(family.owner, other, elsewhere)
+    for device_id in (elsewhere.id, uuid.uuid7(), "not-a-uuid"):
+        missing = await cloud.http.patch(
+            f"{family.path}/devices/{device_id}", json=NAMED, headers=bearer(family.owner)
+        )
+        problem(missing, 404)
+    assert await cloud.devices(family.owner, other) == [added]
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {},
+        {"name": ""},
+        {"name": "x" * 101},
+        {"name": 7},
+        {"name": None},
+        {"name": ["Bi"]},
+        {"name": "Bi\n"},
+        {"name": "Bi\u0085"},
+        {"name": "\u0000"},
+    ],
+)
+async def test_a_name_is_checked(cloud, body: dict[str, Any]) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device)
+    path = f"{family.path}/devices/{device.id}"
+    problem(await cloud.http.patch(path, json=body, headers=bearer(family.owner)), 400)
+    # The same name refuses the registration, before its challenge is used.
+    if "name" in body:
+        issued = await cloud.challenge(family.owner, family.home)
+        registration = Device().registration(issued["challenge"], issued["server"])
+        refused = await cloud.http.post(
+            f"{family.path}/devices",
+            json={"registration": registration, **body},
+            headers=once(family.owner),
+        )
+        problem(refused, 400)
+        assert (await cloud.register(family.owner, family.home, registration)).status_code == 201
+    devices = await cloud.devices(family.owner, family.home)
+    assert [each for each in devices if each["id"] == added["id"]] == [added]
+
+
+async def test_a_name_with_a_lone_surrogate_is_no_text(cloud) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device)
+    broken = await cloud.http.patch(
+        f"{family.path}/devices/{device.id}",
+        content=b'{"name": "Bi\\ud800"}',
+        headers={**bearer(family.owner), "Content-Type": "application/json"},
+    )
+    problem(broken, 400)
+    assert await cloud.devices(family.owner, family.home) == [added]
+
+
+async def test_a_name_has_100_characters_at_most(cloud) -> None:
+    family = await cloud.family()
+    device = Device()
+    added = await cloud.add_device(family.owner, family.home, device, name="Bé " * 33 + "x")
+    assert len(added["name"]) == 100
+    renamed = await cloud.http.patch(
+        f"{family.path}/devices/{device.id}", json={"name": "Đ" * 100}, headers=bearer(family.owner)
+    )
+    assert conforms(renamed, "device")["name"] == "Đ" * 100
 
 
 # Removing a device.

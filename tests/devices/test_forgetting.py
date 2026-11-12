@@ -255,7 +255,7 @@ async def registering(store: Transaction, challenge: str, home_id: UUID, account
     await store.hold_home(home_id)
     assert await store.use_challenge(challenge_hash(challenge), home_id, account_id, now)
     assert await store.add_device(
-        Held(device.id, home_id, now, None), DeviceKey(device.thumbprint, device.jwk)
+        Held(device.id, home_id, now, None, "Robot", 1), DeviceKey(device.thumbprint, device.jwk)
     )
     key = IdempotencyKey(uuid.uuid7(), b"what it asked")
     await store.add_first_answer(account_id, key, home_id, device.id, Answer(201, {}), now)
@@ -405,6 +405,7 @@ async def test_a_registration_after_its_home_or_account_went_adds_nothing(
             account_id,
             home_id,
             signed,
+            "Robot",
             IdempotencyKey(uuid.uuid7(), b"what it asked"),
             lambda _outcome: Answer(201, {}),
         )
@@ -543,8 +544,8 @@ async def test_an_owner_s_home_and_account_are_forgotten_at_once(cloud, engine) 
     share at once: each takes them in the order of their keys, so neither waits for the other
     in a circle. Taken in the orders of two indexes, they deadlocked."""
     await cloud.sql(
-        "INSERT INTO devices.devices (id, home_id, create_time) "
-        "SELECT gen_random_uuid(), gen_random_uuid(), now() FROM generate_series(1, :count)",
+        "INSERT INTO devices.devices (id, home_id, create_time, version) "
+        "SELECT gen_random_uuid(), gen_random_uuid(), now(), 1 FROM generate_series(1, :count)",
         count=OTHERS,
     )
     await cloud.sql(
@@ -568,7 +569,7 @@ async def test_an_owner_s_home_and_account_are_forgotten_at_once(cloud, engine) 
             async with PostgresStore(engine).transaction() as store:
                 for key in keys:
                     device = Device()
-                    held = Held(device.id, home_id, now, None)
+                    held = Held(device.id, home_id, now, None, "Robot", 1)
                     await store.add_device(held, DeviceKey(device.thumbprint, device.jwk))
                     await store.add_first_answer(
                         account_id,
@@ -607,7 +608,8 @@ async def answers_against_their_keys(
         for account_id, key in keys:
             device = Device()
             await store.add_device(
-                Held(device.id, home_id, now, None), DeviceKey(device.thumbprint, device.jwk)
+                Held(device.id, home_id, now, None, "Robot", 1),
+                DeviceKey(device.thumbprint, device.jwk),
             )
             await store.add_first_answer(
                 account_id,

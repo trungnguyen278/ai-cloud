@@ -31,6 +31,10 @@ class RoleRequired(DevicesError):
     """The person's role in the home does not allow this."""
 
 
+class PreconditionFailed(DevicesError):
+    """The device has changed since the ETag that the request named."""
+
+
 class RegistrationInvalid(DevicesError):
     """A device's registration does not verify, or its challenge is unknown, expired, used,
     or another account's or home's."""

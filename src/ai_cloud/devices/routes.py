@@ -56,6 +56,7 @@ _STATUSES: StatusProblems = {
     errors.Unauthenticated: 401,
     errors.NotFound: 404,
     errors.IdempotencyKeyBusy: 409,
+    errors.PreconditionFailed: 412,
     errors.IdempotencyKeyReused: 422,
 }
 
@@ -65,6 +66,7 @@ def router(
 ) -> APIRouter:
     """The devices' routes. A body nests at most ``max_json_depth`` deep."""
     registration_schema = protocol_schema(PROTOCOL, "device_registration")
+    update_schema = protocol_schema(PROTOCOL, "device_update")
 
     async def account(request: Request) -> UUID:
         return await call(service.authenticate(bearer_token(request)))
@@ -87,7 +89,9 @@ def router(
         body = await json_body(request, registration_schema, max_json_depth)
         key = await idempotency_key(request)
         given = await call(
-            service.register(account, item_id(home_id), body["registration"], key, _answer)
+            service.register(
+                account, item_id(home_id), body["registration"], body.get("name"), key, _answer
+            )
         )
         return _response(given)
 
@@ -104,7 +108,18 @@ def router(
     @routes.get(API + "/homes/{home_id}/devices/{device_id}")
     async def read_device(home_id: str, device_id: str, account: Account) -> Response:
         device = await call(service.device(account, item_id(home_id), item_id(device_id)))
-        return JSONResponse(_device(device), headers=NO_STORE)
+        return _tagged(_device(device))
+
+    @routes.patch(API + "/homes/{home_id}/devices/{device_id}")
+    async def rename_device(
+        home_id: str, device_id: str, request: Request, account: Account
+    ) -> Response:
+        body = await json_body(request, update_schema, max_json_depth)
+        if_match = request.headers.get("if-match")
+        device = await call(
+            service.rename(account, item_id(home_id), item_id(device_id), body["name"], if_match)
+        )
+        return _tagged(_device(device))
 
     @routes.delete(API + "/homes/{home_id}/devices/{device_id}")
     async def remove_device(home_id: str, device_id: str, account: Account) -> Response:
@@ -215,12 +230,24 @@ def _answer(outcome: Outcome) -> Answer:
 def _response(answer: Answer) -> Response:
     if answer.status >= 400:
         return JSONResponse(answer.body, answer.status, media_type=MEDIA_TYPE)
-    return JSONResponse(answer.body, answer.status, headers=NO_STORE)
+    if "etag" not in answer.body:
+        # A first answer that the app API 1.4 gave, kept for idempotency_retention: a retry
+        # gets it as it was.
+        return JSONResponse(answer.body, answer.status, headers=NO_STORE)
+    return _tagged(answer.body, answer.status)
+
+
+def _tagged(device: dict[str, Any], status: int = 200) -> Response:
+    """An answer with one device, and its ETag."""
+    return JSONResponse(device, status, headers={**NO_STORE, "ETag": device["etag"]})
 
 
 def _device(shown: Shown) -> dict[str, Any]:
     device = shown.device
     body: dict[str, Any] = {"id": str(device.id)}
+    if device.name is not None:
+        # Absent for a device that an app of 1.4 registered, until someone names it.
+        body["name"] = device.name
     if device.description is not None:
         # Absent until its first hello.
         body["kind"] = device.description.kind
@@ -228,4 +255,5 @@ def _device(shown: Shown) -> dict[str, Any]:
         body["software"] = device.description.software
     body["connected"] = shown.connected
     body["create_time"] = instant(device.create_time)
+    body["etag"] = device.etag
     return body

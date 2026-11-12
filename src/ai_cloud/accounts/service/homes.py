@@ -49,7 +49,6 @@ from ai_cloud.accounts.domain.model import (
     NewInvitation,
     Principal,
     Role,
-    etag_matches,
     invitation_usable,
     may_change,
     may_manage,
@@ -60,6 +59,7 @@ from ai_cloud.accounts.ports import Store, Transaction
 from ai_cloud.accounts.service.common import SignIns, account_of, check_signs_in_to, now
 from ai_cloud.accounts.settings import AccountsSettings
 from ai_cloud.shared.app_api import AppApiSettings, IdempotencyKey, Page, page_of
+from ai_cloud.shared.etags import etag_matches
 from ai_cloud.shared.rates import RateLimiter
 
 log = logging.getLogger(__name__)

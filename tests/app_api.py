@@ -21,6 +21,8 @@ CLIENT = "ai-app"
 ADDRESS = "192.0.2.10"  # the app's, as the api sees it (TEST-NET-1, RFC 5737)
 EXCHANGE = "urn:ietf:params:oauth:grant-type:token-exchange"
 ID_TOKEN = "urn:ietf:params:oauth:token-type:id_token"
+# The name a device gives itself at set-up, which the app relays with its registration.
+DEVICE_NAME = "Robot"
 
 
 def conforms(response: httpx2.Response, definition: str) -> dict[str, Any]:
@@ -243,24 +245,32 @@ class Cloud:
         return conforms(response, "device_challenge")
 
     async def register(
-        self, tokens: dict[str, Any], home: dict[str, Any], registration: str, key: str = ""
+        self,
+        tokens: dict[str, Any],
+        home: dict[str, Any],
+        registration: str,
+        key: str = "",
+        name: str | None = DEVICE_NAME,
     ) -> httpx2.Response:
         """Relay a device's registration into the home, with the Idempotency-Key ``key``, or
-        a new one."""
+        a new one, and the name the device gives itself; none, as an app of 1.4 sends."""
+        body = {"registration": registration} | ({} if name is None else {"name": name})
         return await self.http.post(
-            f"/app/v1/homes/{home['id']}/devices",
-            json={"registration": registration},
-            headers=once(tokens, key or None),
+            f"/app/v1/homes/{home['id']}/devices", json=body, headers=once(tokens, key or None)
         )
 
     async def add_device(
-        self, tokens: dict[str, Any], home: dict[str, Any], device: Any
+        self,
+        tokens: dict[str, Any],
+        home: dict[str, Any],
+        device: Any,
+        name: str | None = DEVICE_NAME,
     ) -> dict[str, Any]:
         """Register ``device`` into the home, as set-up does: a challenge, which the device
-        signs, then its registration."""
+        signs, then its registration, with ``name``."""
         issued = await self.challenge(tokens, home)
         response = await self.register(
-            tokens, home, device.registration(issued["challenge"], issued["server"])
+            tokens, home, device.registration(issued["challenge"], issued["server"]), name=name
         )
         assert response.status_code == 201, response.text
         return conforms(response, "device")

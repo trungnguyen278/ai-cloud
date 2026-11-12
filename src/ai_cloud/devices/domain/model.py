@@ -1,21 +1,25 @@
 # SPDX-License-Identifier: MIT
-"""The devices' types and rules, without I/O (ai-platform ADR-0012, and its app API 1.4).
+"""The devices' types and rules, without I/O (ai-platform ADR-0012 and ADR-0013, and its app
+API 1.5).
 
 A device belongs to a home, not to the person who added it. What binds it there is the
 cloud's record of its identifier, which it made itself, and of its key, which its
 registration carried. The owner or an admin of the home asks for a challenge, which the
 device signs with that key at set-up, and the app relays: the challenge carries the home,
-which the device never learns, and works once.
+which the device never learns, and works once. The app relays the device's own name with it,
+which the device keeps in the home until the owner or an admin renames it.
 """
 
 import hashlib
 import re
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from enum import Enum
 from typing import Any
 from uuid import UUID
+
+from ai_cloud.shared.etags import weak_etag
 
 # Random bytes in a challenge (the app API's $defs/challenge).
 CHALLENGE_BYTES = 32
@@ -27,7 +31,7 @@ _IDENTIFIER = re.compile(
 
 class Access(Enum):
     """What a person in a home may do with its devices (the app API's What each role may
-    do): everyone sees them; the owner and admins add and remove them."""
+    do): everyone sees them; the owner and admins add, rename and remove them."""
 
     SEE = "see"
     MANAGE = "manage"
@@ -67,6 +71,16 @@ class Device:
     create_time: datetime
     # What its latest hello said it is; None until its first.
     description: Description | None
+    # Its name in the home, which people see: None for one that an app of the app API 1.4
+    # registered, until someone names it.
+    name: str | None
+    # Its version, which its name alone changes: its connections and its hello do not, so
+    # that a rename does not race the device.
+    version: int
+
+    @property
+    def etag(self) -> str:
+        return weak_etag(self.version)
 
 
 @dataclass(frozen=True)
@@ -188,6 +202,19 @@ def binding(home_id: UUID, holder: Device | None, key_holder: UUID | None) -> Bi
     if holder is not None and holder.home_id == home_id and key_holder == holder.id:
         return Binding.SAME
     return Binding.TAKEN
+
+
+def renamed(device: Device, name: str) -> Device:
+    """The device with that name, at its next version."""
+    return replace(device, name=name, version=device.version + 1)
+
+
+def named_again(device: Device, name: str | None) -> Device | None:
+    """The device that registers again into its home, with the name its registration brought,
+    if it had none; ``None`` if it keeps what it has (the app API, Adding a device)."""
+    if device.name is not None or name is None:
+        return None
+    return renamed(device, name)
 
 
 def identifier(value: object) -> UUID | None:

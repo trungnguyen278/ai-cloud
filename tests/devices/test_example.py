@@ -113,7 +113,7 @@ async def test_the_example_runs_as_it_says(make_cloud) -> None:
             method, target = message["request"].split(" ", 1)
             body = message.get("message")
             if body is not None and "registration" in body:
-                body = {"registration": robot.sign(body["registration"], challenge)}
+                body = {**body, "registration": robot.sign(body["registration"], challenge)}
             answer = next(messages)
             expected = answer.get("message", {})
             if expected.get("connected") is True and robot.link is None:

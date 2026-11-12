@@ -97,6 +97,21 @@ class PostgresTransaction:
         ).one_or_none()
         return None if row is None else _device(row)
 
+    async def hold_device(self, device_id: UUID) -> Device | None:
+        row = (
+            await self._db.execute(
+                select(devices).where(devices.c.id == device_id).with_for_update()
+            )
+        ).one_or_none()
+        return None if row is None else _device(row)
+
+    async def save_name(self, device: Device) -> None:
+        await self._db.execute(
+            update(devices)
+            .where(devices.c.id == device.id)
+            .values(name=device.name, version=device.version)
+        )
+
     async def key_holder(self, thumbprint: str) -> UUID | None:
         found = await self._db.execute(
             select(keys.c.device_id).where(keys.c.thumbprint == thumbprint)
@@ -149,7 +164,11 @@ class PostgresTransaction:
             async with self._db.begin_nested():
                 await self._db.execute(
                     insert(devices).values(
-                        id=device.id, home_id=device.home_id, create_time=device.create_time
+                        id=device.id,
+                        home_id=device.home_id,
+                        create_time=device.create_time,
+                        name=device.name,
+                        version=device.version,
                     )
                 )
                 await self._db.execute(
@@ -297,6 +316,8 @@ def _device(row: Row[Any]) -> Device:
         home_id=row.home_id,
         create_time=row.create_time,
         description=Description(row.kind, row.model, row.software) if described else None,
+        name=row.name,
+        version=row.version,
     )
 
 

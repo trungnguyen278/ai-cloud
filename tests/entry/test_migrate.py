@@ -3,19 +3,21 @@
 
 import asyncio
 import shutil
+import uuid
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
+from alembic import command
 from alembic.autogenerate import compare_metadata
 from alembic.migration import MigrationContext
 from sqlalchemy import Column, Connection, Text, inspect, text
 
 from ai_cloud.accounts.db.tables import MIGRATIONS as ACCOUNTS
 from ai_cloud.devices.db.tables import MIGRATIONS as DEVICES
-from ai_cloud.entry.migrate import MODULES, migrate, revise
+from ai_cloud.entry.migrate import MODULES, alembic_config, migrate, revise
 from ai_cloud.shared.database import (
     DatabaseSettings,
     Migrations,
@@ -108,7 +110,7 @@ NEWEST = {
     ),
     DEVICES.schema: (
         ["alembic_version", "challenges", "devices", "idempotency_keys", "keys"],
-        "devices_0002",
+        "devices_0003",
     ),
 }
 
@@ -136,6 +138,51 @@ def test_every_module_migrates_to_what_its_tables_declare(
     asyncio.run(migrate(fresh, settings))
     for module in MODULES:
         assert _on(fresh, settings, _state(module))[2] == [NEWEST[module.schema][1]]
+
+
+def test_a_device_registered_before_names_has_no_name(
+    fresh: str, settings: DatabaseSettings
+) -> None:
+    device_id = uuid.uuid4()
+
+    async def before() -> None:
+        engine = create_engine(fresh, settings, "ai-cloud tests")
+        try:
+            async with engine.begin() as connection:
+                await connection.run_sync(
+                    lambda sync: command.upgrade(
+                        alembic_config(DEVICES, sync, MODULES), "devices_0002"
+                    )
+                )
+                await connection.execute(
+                    text(
+                        "INSERT INTO devices.devices (id, home_id, create_time) "
+                        "VALUES (:id, :home, now())"
+                    ),
+                    {"id": device_id, "home": uuid.uuid4()},
+                )
+        finally:
+            await engine.dispose()
+
+    asyncio.run(before())
+    asyncio.run(migrate(fresh, settings))
+    rows = _on(
+        fresh,
+        settings,
+        lambda connection: connection.execute(
+            text("SELECT id, name, version FROM devices.devices")
+        ).all(),
+    )
+    # An app of 1.4 sent no name; its ETag is a new device's.
+    assert [tuple(row) for row in rows] == [(device_id, None, 1)]
+    # The default filled the rows there were, and went: each new row names its version.
+    columns = _on(
+        fresh,
+        settings,
+        lambda connection: inspect(connection).get_columns("devices", schema=DEVICES.schema),
+    )
+    [version] = [column for column in columns if column["name"] == "version"]
+    assert version["default"] is None
 
 
 def test_a_revision_is_written_from_what_the_tables_lack(
