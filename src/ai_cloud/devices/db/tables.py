@@ -10,6 +10,7 @@ from pathlib import Path
 
 from sqlalchemy import (
     JSON,
+    BigInteger,
     Column,
     DateTime,
     ForeignKey,
@@ -40,6 +41,11 @@ devices = Table(
     Column("kind", Text),
     Column("model", Text),
     Column("software", Text),
+    # Its name in the home: none for a device that an app of the app API 1.4 registered,
+    # until someone names it.
+    Column("name", Text),
+    # Its version, which its name alone changes: its ETag's.
+    Column("version", BigInteger, nullable=False),
     # A home's devices, in the order its lists show them.
     Index("ix_devices_home_id_id", "home_id", "id"),
 )

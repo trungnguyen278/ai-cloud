@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads (the app API 1.4, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.0, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys and their names, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads (the app API 1.5, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.0, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -49,7 +49,7 @@ The same package runs as three processes, each started by its own entry point:
 | Module | Owns |
 |---|---|
 | `accounts` | Homes and their members: people with roles, and profiles for those who never sign in; sign-in ([ai-platform ADR-0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md)); invitations ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)) |
-| `devices` | The registry: each device's key, kind, model and software, its home, set-up's registrations, its tokens, its health. Each device's session on its control channel, the one way to call its tools. The control channel is a port: a WebSocket today, other kinds for devices that cannot keep one |
+| `devices` | The registry: each device's key, kind, model and software, its home and its name there, set-up's registrations, its tokens, its health. Each device's session on its control channel, the one way to call its tools. The control channel is a port: a WebSocket today, other kinds for devices that cannot keep one |
 | `conversation` | Conversations, the speech pipeline, turns, the persona for each kind of device and language, the tools of a turn, barge-in, fillers, confirmations |
 | `memory` | What a conversation remembers, summaries across conversations, long-term facts with their embeddings; retention and deletion |
 | `skills` | The cloud's own tools: time and the lunar calendar, weather, timers and reminders, knowledge, and more as they come. Each is an MCP server, run in the process or apart |
@@ -131,7 +131,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 | With | How |
 |---|---|
 | Devices | The cloud link: a control channel always on (a WebSocket), and a LiveKit room to talk ([ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)) |
-| The app | The app API over HTTPS (`platform/protocols/app/`; 1.4 signs people in, keeps their homes, and registers their devices), and push |
+| The app | The app API over HTTPS (`platform/protocols/app/`; 1.5 signs people in, keeps their homes, and registers and names their devices), and push |
 | Set-up | The registration that the app relays (the set-up protocol), through the app API's devices |
 
 ## Security

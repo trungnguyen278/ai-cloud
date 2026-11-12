@@ -21,6 +21,8 @@ from enum import StrEnum
 from typing import Any
 from uuid import UUID
 
+from ai_cloud.shared.etags import weak_etag
+
 # Fixed by the app API (platform/protocols/app/schema.json).
 DISPLAY_NAME_MAX = 100  # $defs/display_name, maxLength
 MAX_IDENTITIES = 16  # $defs/account, identities' maxItems
@@ -66,7 +68,7 @@ class Account:
 
     @property
     def etag(self) -> str:
-        return _etag(self.version)
+        return weak_etag(self.version)
 
 
 @dataclass(frozen=True)
@@ -134,7 +136,7 @@ class Home:
 
     @property
     def etag(self) -> str:
-        return _etag(self.version)
+        return weak_etag(self.version)
 
 
 @dataclass(frozen=True)
@@ -173,7 +175,7 @@ class Member:
 
     @property
     def etag(self) -> str:
-        return _etag(self.version)
+        return weak_etag(self.version)
 
 
 @dataclass(frozen=True)
@@ -304,13 +306,3 @@ def invitation_usable(invitation: Invitation, asker: Member | None, now: datetim
     if now >= invitation.expire_time:
         return False
     return invitation.used_by is None or (asker is not None and invitation.used_by == asker.id)
-
-
-def etag_matches(if_match: str, etag: str) -> bool:
-    """Whether ``If-Match`` names ``etag``: as written, the app API's ETags being compared
-    as the cloud gives them; ``*`` matches any."""
-    return any(candidate.strip() in ("*", etag) for candidate in if_match.split(","))
-
-
-def _etag(version: int) -> str:
-    return f'W/"{version}"'
