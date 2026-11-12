@@ -44,14 +44,38 @@ class DeviceKey:
 
 
 @dataclass(frozen=True)
+class Description:
+    """What a device says it is, in its hello on the cloud link (The session, hello)."""
+
+    # Its kind, such as robot.
+    kind: str
+    # Its model, as its maker names it.
+    model: str
+    # The version of its software.
+    software: str
+
+
+@dataclass(frozen=True)
 class Device:
     """A device in a home."""
 
     # The identifier the device made itself (ai-platform ADR-0004).
     id: UUID
     home_id: UUID
-    # When it was registered into the home.
+    # When it was registered into the home. A device removed and registered again is a new
+    # registration, with a time of its own.
     create_time: datetime
+    # What its latest hello said it is; None until its first.
+    description: Description | None
+
+
+@dataclass(frozen=True)
+class Shown:
+    """A device as the app sees it: the registry's record, and whether its control channel is
+    open now."""
+
+    device: Device
+    connected: bool
 
 
 @dataclass(frozen=True)
@@ -69,6 +93,23 @@ class DeviceToken:
 
     access_token: str
     expires_in: int
+
+
+@dataclass(frozen=True)
+class TokenHolder:
+    """Who a device's access token speaks for: the device, and when the token was issued, in
+    seconds since the epoch."""
+
+    device_id: UUID
+    issued: int
+
+
+@dataclass(frozen=True)
+class Opening:
+    """A connection the registry lets open: the device, and the registration it is under."""
+
+    device_id: UUID
+    registered: datetime
 
 
 @dataclass(frozen=True)
@@ -105,7 +146,7 @@ class Registered:
     """A registration the cloud accepted: the device in the home, and whether it is new
     there, or was there already with this identifier and this key."""
 
-    device: Device
+    device: Shown
     new: bool
 
 

@@ -13,12 +13,14 @@ from typing import Any
 
 import httpx2
 import pytest
+import redis.asyncio
 from app_api import Cloud, bearer
 from device import Device
 from forge import hs256, public_pem
 
 from ai_cloud.accounts.api import HomeDeleted
 from ai_cloud.devices.adapters.postgres import PostgresStore
+from ai_cloud.devices.adapters.redis import RedisHints
 from ai_cloud.devices.service import Forgetting
 from ai_cloud.shared.database import create_engine
 from ai_cloud.shared.events import Event
@@ -108,11 +110,13 @@ async def test_a_removed_device_gets_no_token(cloud) -> None:
 async def test_a_deleted_home_s_device_gets_no_token(cloud) -> None:
     _, home, device = await registered(cloud)
     engine = create_engine(cloud.database, cloud.settings.database, "ai-cloud tests")
+    client = redis.asyncio.Redis.from_url(cloud.redis_url)
     try:
         data = {"home_id": home["id"]}
         event = Event(uuid.uuid7(), "/accounts", HomeDeleted.TYPE, "s", datetime.now(UTC), data)
-        await Forgetting(PostgresStore(engine)).home_deleted(event)
+        await Forgetting(PostgresStore(engine), RedisHints(client)).home_deleted(event)
     finally:
+        await client.aclose()
         await engine.dispose()
     response = await cloud.device_token(device.assertion(cloud.token_endpoint))
     oauth_error(response, "invalid_client", 401)

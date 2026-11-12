@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys, and gives them their access tokens, before their control channel (the app API 1.4, [ADR-0010](decisions/0010-device-registrations.md), and the cloud link 3.0's token endpoint); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads (the app API 1.4, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.0, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -38,7 +38,7 @@ The same package runs as three processes, each started by its own entry point:
 
 | Process | What it runs | Grows by |
 |---|---|---|
-| `api` | FastAPI: devices' control channels and tokens, set-up's registration, the app's API, administration | more replicas: it keeps no state |
+| `api` | FastAPI: devices' control channels and tokens, set-up's registration, the app's API, administration | more replicas, which share nothing but PostgreSQL and Redis: each holds the control channels of the devices connected to it ([ADR-0011](decisions/0011-control-channels.md)) |
 | `agent` | A LiveKit Agents worker: one job per conversation, in its room | more workers, among which LiveKit spreads the jobs |
 | `worker` | Background work: delivering domain events, schedules (reminders, rollouts, memory upkeep), notifications | more workers on the queue |
 

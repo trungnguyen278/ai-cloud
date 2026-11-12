@@ -35,6 +35,11 @@ devices = Table(
     Column("id", Uuid, primary_key=True),
     Column("home_id", Uuid, nullable=False),
     Column("create_time", DateTime(timezone=True), nullable=False),
+    # What the device's latest hello on the cloud link said it is: its kind, its model and
+    # the version of its software, all three or none until its first.
+    Column("kind", Text),
+    Column("model", Text),
+    Column("software", Text),
     # A home's devices, in the order its lists show them.
     Index("ix_devices_home_id_id", "home_id", "id"),
 )

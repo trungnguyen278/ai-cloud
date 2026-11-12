@@ -34,7 +34,7 @@ _ACCOUNT = "account"  # $defs/member's kind, for a person with an account
 _PROFILE = "profile"  # and for one without
 
 
-def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
+def home_routes(service: HomesService, Authenticated: Any, *, max_json_depth: int) -> APIRouter:
     """The routes of homes. ``Authenticated`` annotates who a request speaks for."""
     schemas = {
         name: protocol_schema(PROTOCOL, name)
@@ -64,7 +64,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.post(f"{API}/homes")
     async def create_home(request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["home_create"])
+        body = await json_body(request, schemas["home_create"], max_json_depth)
         new = NewHome(body["name"], body["time_zone"], tuple(body["languages"]))
         key = await idempotency_key(request)
         return _tagged(await call(service.create_home(principal, new, key, _home)), 201)
@@ -75,7 +75,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.patch(API + "/homes/{home_id}")
     async def change_home(home_id: str, request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["home_update"])
+        body = await json_body(request, schemas["home_update"], max_json_depth)
         languages = body.get("languages")
         changes = HomeChanges(
             body.get("name"),
@@ -88,7 +88,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.post(API + "/homes/{home_id}:transfer")
     async def transfer_home(home_id: str, request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["home_transfer"])
+        body = await json_body(request, schemas["home_transfer"], max_json_depth)
         view = await call(
             service.transfer_home(
                 principal, item_id(home_id), item_id(body["to_member_id"]), body["id_token"]
@@ -98,7 +98,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.post(API + "/homes/{home_id}:delete")
     async def delete_home(home_id: str, request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["id_token_request"])
+        body = await json_body(request, schemas["id_token_request"], max_json_depth)
         await call(service.delete_home(principal, item_id(home_id), body["id_token"]))
         return Response(status_code=204)
 
@@ -119,7 +119,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.post(API + "/homes/{home_id}/members")
     async def add_profile(home_id: str, request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["profile_create"])
+        body = await json_body(request, schemas["profile_create"], max_json_depth)
         key = await idempotency_key(request)
         answer = await call(
             service.add_profile(
@@ -136,7 +136,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
     async def change_member(
         home_id: str, member_id: str, request: Request, principal: Authenticated
     ) -> Response:
-        body = await json_body(request, schemas["member_update"])
+        body = await json_body(request, schemas["member_update"], max_json_depth)
         role = body.get("role")
         changes = MemberChanges(body.get("display_name"), None if role is None else Role(role))
         if_match = request.headers.get("if-match")
@@ -180,7 +180,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.post(f"{API}/invitations:lookup")
     async def look_up_invitation(request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["invitation_code_request"])
+        body = await json_body(request, schemas["invitation_code_request"], max_json_depth)
         preview = await call(service.look_up_invitation(principal, body["code"]))
         answer = {
             "home_name": preview.home_name,
@@ -191,7 +191,7 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
 
     @routes.post(f"{API}/invitations:accept")
     async def accept_invitation(request: Request, principal: Authenticated) -> Response:
-        body = await json_body(request, schemas["invitation_code_request"])
+        body = await json_body(request, schemas["invitation_code_request"], max_json_depth)
         view, joined = await call(service.accept_invitation(principal, body["code"]))
         return _tagged(_home(view), 201 if joined else 200)
 

@@ -18,14 +18,21 @@ from ai_cloud.accounts.service import AccountsService, HomesService
 from ai_cloud.shared.app_api import bearer_token
 
 
-def router(accounts: AccountsService, homes: HomesService, *, development: bool) -> APIRouter:
-    """The accounts' routes; the development provider's too, if ``development``."""
+def router(
+    accounts: AccountsService, homes: HomesService, *, development: bool, max_json_depth: int
+) -> APIRouter:
+    """The accounts' routes; the development provider's too, if ``development``. A body
+    nests at most ``max_json_depth`` deep."""
 
     async def principal(request: Request) -> Principal:
         return await call(accounts.authenticate(bearer_token(request)))
 
     authenticated = Annotated[Principal, Depends(principal)]
     routes = APIRouter()
-    routes.include_router(account_routes(accounts, authenticated, development=development))
-    routes.include_router(home_routes(homes, authenticated))
+    routes.include_router(
+        account_routes(
+            accounts, authenticated, development=development, max_json_depth=max_json_depth
+        )
+    )
+    routes.include_router(home_routes(homes, authenticated, max_json_depth=max_json_depth))
     return routes

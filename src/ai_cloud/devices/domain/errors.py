@@ -8,7 +8,13 @@ class DevicesError(Exception):
 
 
 class Unauthenticated(DevicesError):
-    """An access token is missing, malformed, expired, or its session has ended."""
+    """An access token is missing, malformed, expired, or its session has ended; or a
+    device's is no longer its registration's."""
+
+
+class Unavailable(DevicesError):
+    """The cloud cannot take a device's connection now: the device connects again after its
+    backoff."""
 
 
 class RateLimited(DevicesError):

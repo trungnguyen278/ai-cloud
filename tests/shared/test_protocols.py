@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: MIT
 import json
 import re
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -14,9 +15,11 @@ from ai_cloud.shared.protocols import (
     ecma_end,
     platform_dir,
     protocol_schema,
+    read_json,
 )
 
 TOKEN = "eyJ" + "s3cr3t" * 2000
+DEPTH = 64  # as the configuration's max_json_depth, but the tests do not read it
 
 
 def test_the_platform_is_this_checkout_s() -> None:
@@ -134,3 +137,113 @@ def test_every_pattern_reads_alike_in_python_and_ecma_262() -> None:
 @pytest.mark.parametrize("pattern", [r"^\d+$", r"^\w$", r"a\sb", r"\bx"])
 def test_a_shorthand_would_be_noticed(pattern: str) -> None:
     assert _SHORTHANDS.search(pattern) is not None
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("[" * 20_000 + "]" * 20_000, id="nested too deep"),
+        pytest.param("[" * 500_000 + "]" * 500_000, id="nested past Python's reader"),
+        pytest.param('{"x": 1e400}', id="a number past a double"),
+        pytest.param("-1e400", id="past a double below"),
+        pytest.param('{"x": NaN}', id="NaN"),
+        pytest.param("[Infinity]", id="Infinity"),
+        pytest.param('"\\ud800"', id="a lone surrogate"),
+        pytest.param(b"\xff", id="no UTF-8"),
+        pytest.param("not JSON", id="no JSON"),
+    ],
+)
+def test_what_is_not_json_is_a_value_error(text: str | bytes) -> None:
+    with pytest.raises(ValueError) as raised:
+        read_json(text, DEPTH)
+    # It names no value: neither the character nor the byte.
+    assert not re.search("d800|ff|NaN|Infinity|1e400", str(raised.value), re.IGNORECASE)
+
+
+def test_json_is_read() -> None:
+    assert read_json(b'{"x": [1.5, 1e300, -0, "\\u0041"]}', DEPTH) == {"x": [1.5, 1e300, 0, "A"]}
+
+
+def _nested(levels: int, *, objects_from: int = 0) -> str:
+    """JSON that nests ``levels`` deep, each level an array, or from the level
+    ``objects_from`` (counted from 1; 0 for none) an object holding the next."""
+    text = "1"
+    for level in range(levels, 0, -1):
+        text = f'{{"x": {text}}}' if objects_from and level >= objects_from else f"[{text}]"
+    return text
+
+
+@pytest.mark.parametrize("objects_from", [0, 1, 2, 33])
+def test_json_is_read_down_to_the_depth_and_no_further(objects_from: int) -> None:
+    """``max_depth`` counts levels of arrays and objects, mixed or not; Python's reader is
+    not what limits it (it reads 20,000 deep on Linux)."""
+    read_json(_nested(DEPTH, objects_from=objects_from), DEPTH)
+    with pytest.raises(ValueError):
+        read_json(_nested(DEPTH + 1, objects_from=objects_from), DEPTH)
+
+
+def test_the_depth_is_what_the_caller_gives() -> None:
+    assert read_json("[[1]]", 2) == [[1]]
+    with pytest.raises(ValueError):
+        read_json("[[1]]", 1)
+    assert read_json("1", 1) == 1
+
+
+def test_the_depth_counts_levels_in_every_branch() -> None:
+    """The deepest branch comes last, behind branches that reach the limit and no further."""
+    within = ",".join([_nested(DEPTH - 1)] * 3)
+    read_json(f"[{within}]", DEPTH)
+    with pytest.raises(ValueError):
+        read_json(f"[{within},{_nested(DEPTH)}]", DEPTH)
+
+
+def _arrays(schema: Any) -> Iterator[dict[str, Any]]:
+    if isinstance(schema, dict):
+        if schema.get("uniqueItems"):
+            yield schema
+        for value in schema.values():
+            yield from _arrays(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            yield from _arrays(value)
+
+
+def test_every_array_of_unique_items_is_bounded() -> None:
+    """What the cloud's uniqueItems counts on: JSON Schema's own way compares each item with
+    each, recursing as deep as they nest."""
+    found = 0
+    for path in sorted(platform_dir().glob("*/schema.json")):
+        for array in _arrays(json.loads(path.read_text(encoding="utf-8"))):
+            found += 1
+            assert "maxItems" in array, path
+            assert "items" in array, path
+    assert found > 0
+
+
+@pytest.mark.parametrize(
+    ("items", "says"),
+    [
+        pytest.param([{"n": n} for n in range(6000)], "breaks maxItems", id="many"),
+        pytest.param([json.loads("[" * 1000 + "]" * 1000)] * 2, "of type", id="nested"),
+        pytest.param(["vi", "vi"], "uniqueItems", id="the same twice"),
+        pytest.param([{"n": 1}, {"n": 1}], "uniqueItems", id="the same object twice"),
+        pytest.param(1, "of type array", id="no array"),
+    ],
+)
+def test_unique_items_are_compared_only_where_the_array_may_hold_them(
+    items: Any, says: str
+) -> None:
+    # Objects are items, which cannot be sorted: each is compared with every other.
+    schema = Schema(
+        "a test's",
+        {
+            "type": "array",
+            "items": {"type": ["string", "object"]},
+            "maxItems": 16,
+            "uniqueItems": True,
+        },
+    )
+    started = time.monotonic()
+    problem = schema.problem(items)
+    assert time.monotonic() - started < 1
+    assert problem is not None and says in problem

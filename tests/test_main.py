@@ -104,7 +104,12 @@ def test_the_environment_comes_from_the_command_line_or_a_variable(
     assert main(["api", "--environment", "development", "--config-dir", str(config_dir)]) == 0
     monkeypatch.setenv(ENVIRONMENT_ENV, "production")
     assert main(["api", "--config-dir", str(config_dir)]) == 0
-    same = {"port": 8123, "forwarded_allow_ips": ["127.0.0.1", "::1"], "max_body_size": 65536}
+    same = {
+        "port": 8123,
+        "forwarded_allow_ips": ["127.0.0.1", "::1"],
+        "max_body_size": 65536,
+        "shutdown_timeout": 3,
+    }
     assert served == [
         ApiSettings(host="127.0.0.1", access_log=True, **same),
         ApiSettings(host="0.0.0.0", access_log=False, **same),

@@ -27,6 +27,7 @@ dev = [
     { name = "pyyaml" },
     { name = "ruff" },
     { name = "testcontainers" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -51,6 +52,7 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
     { name = "ruff", specifier = ">=0.17,<0.18" },
     { name = "testcontainers", specifier = ">=4.15,<5" },
+    { name = "websockets", specifier = ">=17.3,<18" },
 ]
 
 [[package]]

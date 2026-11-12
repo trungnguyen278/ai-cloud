@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from types import FrameType
 from typing import Self
 
+from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncEngine
 
 from ai_cloud.accounts.api import OUTBOX as ACCOUNTS
@@ -36,12 +37,12 @@ APPLICATION_NAME = "ai-cloud worker"  # how its connections appear in PostgreSQL
 # Every module's outbox.
 OUTBOXES: tuple[Outbox, ...] = (ACCOUNTS,)
 
-type Consumers = Callable[[AsyncEngine], Sequence[Consumer]]
+type Consumers = Callable[[AsyncEngine, Redis], Sequence[Consumer]]
 
 
-def module_consumers(engine: AsyncEngine) -> list[Consumer]:
-    """Every module's consumers, on the worker's database."""
-    return [*devices_consumers(engine)]
+def module_consumers(engine: AsyncEngine, redis: Redis) -> list[Consumer]:
+    """Every module's consumers, on the worker's database and Redis."""
+    return [*devices_consumers(engine, redis)]
 
 
 # What tells the process to stop. Windows sends no SIGTERM, but Ctrl+Break.
@@ -83,7 +84,7 @@ async def serve(
     try:
         async with asyncio.TaskGroup() as tasks:
             tasks.create_task(Relay(engine, queue, outboxes, settings.events).run(stop))
-            for consumer in consumers(engine):
+            for consumer in consumers(engine, redis):
                 tasks.create_task(Subscription(consumer, queue, settings.events).run(stop))
     finally:
         await redis.aclose()

@@ -10,7 +10,6 @@ below are the API's, and are written once.
 import base64
 import binascii
 import hashlib
-import json
 import math
 import re
 from collections.abc import Callable, Mapping
@@ -23,9 +22,9 @@ from fastapi import Request
 from pydantic import Field
 
 from ai_cloud.shared.config import Settings
-from ai_cloud.shared.oauth import NO_STORE, media_type
+from ai_cloud.shared.oauth import CHALLENGE, NO_STORE, bearer, media_type
 from ai_cloud.shared.problems import Problem
-from ai_cloud.shared.protocols import Schema
+from ai_cloud.shared.protocols import Schema, read_json
 
 __all__ = [
     "API",
@@ -65,12 +64,13 @@ _IDEMPOTENCY_KEY = re.compile(
 
 _JSON = "application/json"
 # What a request without a valid access token gets (RFC 6750, 3; the app API, Requests).
-CHALLENGE = {"WWW-Authenticate": 'Bearer error="invalid_token"'}
 
 
 class AppApiSettings(Settings):
     # Seconds a retry with an Idempotency-Key gets the first answer (idempotency_retention).
     idempotency_retention: Annotated[int, Field(ge=1)]
+    # How deep a body may nest its arrays and objects: deeper, it is not JSON the API reads.
+    max_json_depth: Annotated[int, Field(ge=1)]
 
 
 @dataclass(frozen=True)
@@ -118,22 +118,20 @@ def over_the_rate(retry_after: float, detail: str) -> Problem:
 
 def bearer_token(request: Request) -> str:
     """The access token the request carries (RFC 6750, 2.1); a problem without one."""
-    scheme, _, token = request.headers.get("authorization", "").partition(" ")
-    token = token.strip()
-    if scheme.lower() != "bearer" or not token:
+    token = bearer(request.headers)
+    if token is None:
         raise Problem(401, "a bearer access token is needed", headers=CHALLENGE)
     return token
 
 
-async def json_body(request: Request, schema: Schema) -> dict[str, Any]:
-    """The request's JSON body, checked against ``schema``."""
+async def json_body(request: Request, schema: Schema, max_depth: int) -> dict[str, Any]:
+    """The request's JSON body, nested at most ``max_depth`` deep and checked against
+    ``schema``."""
     if media_type(request) != _JSON:
         raise Problem(415, f"the body must be {_JSON}")
     try:
-        body = json.loads(await request.body())
-        # A lone surrogate, which JSON's escapes can spell, is no text: nothing can store it.
-        json.dumps(body, ensure_ascii=False).encode()
-    except ValueError:  # UnicodeDecodeError and UnicodeEncodeError included
+        body = read_json(await request.body(), max_depth)
+    except ValueError:
         raise Problem(400, "the body is not JSON") from None
     if (problem := schema.problem(body)) is not None:
         raise Problem(400, problem)

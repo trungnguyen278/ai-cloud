@@ -1,11 +1,12 @@
 # SPDX-License-Identifier: MIT
-"""The devices' HTTP endpoints: the app API's devices (platform/protocols/app/README.md,
-Devices), and the cloud link's token endpoint (platform/protocols/cloud/README.md, Tokens
-from the server).
+"""The devices' endpoints: the app API's devices (platform/protocols/app/README.md,
+Devices), and the cloud link's token endpoint and control channel
+(platform/protocols/cloud/README.md, Connecting).
 
 Each body is read and checked here (SEC-14); the services do the rest. A registration's
 answer is kept as the routes make it, so that a retry gets the same, a refusal included. The
-token endpoint answers errors as OAuth does (RFC 6749, 5.2).
+token endpoint answers errors as OAuth does (RFC 6749, 5.2); the control channel's handshake
+as Problem Details, whose status the device acts on.
 """
 
 import logging
@@ -14,13 +15,14 @@ from collections.abc import Awaitable
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Request, Response, WebSocket
 from fastapi.responses import JSONResponse
 
-from ai_cloud.devices.domain import errors
+from ai_cloud.devices.adapters.websocket import WebSocketChannel
+from ai_cloud.devices.domain import errors, link
 from ai_cloud.devices.domain.assertion import ASSERTION_TYPE, GRANT_TYPE, TOKEN_PATH
-from ai_cloud.devices.domain.model import Answer, Device, Registered
-from ai_cloud.devices.service import DevicesService, DeviceTokens, Outcome
+from ai_cloud.devices.domain.model import Answer, Registered, Shown
+from ai_cloud.devices.service import DevicesService, DeviceTokens, Links, Outcome
 from ai_cloud.shared.app_api import (
     API,
     NO_STORE,
@@ -36,7 +38,7 @@ from ai_cloud.shared.app_api import (
     page_request,
     problem_of,
 )
-from ai_cloud.shared.oauth import OAuthError, form
+from ai_cloud.shared.oauth import CHALLENGE, OAuthError, bearer, form
 from ai_cloud.shared.problems import MEDIA_TYPE, Problem
 from ai_cloud.shared.protocols import protocol_schema
 
@@ -58,8 +60,10 @@ _STATUSES: StatusProblems = {
 }
 
 
-def router(service: DevicesService, tokens: DeviceTokens) -> APIRouter:
-    """The devices' routes."""
+def router(
+    service: DevicesService, tokens: DeviceTokens, links: Links, *, max_json_depth: int
+) -> APIRouter:
+    """The devices' routes. A body nests at most ``max_json_depth`` deep."""
     registration_schema = protocol_schema(PROTOCOL, "device_registration")
 
     async def account(request: Request) -> UUID:
@@ -80,7 +84,7 @@ def router(service: DevicesService, tokens: DeviceTokens) -> APIRouter:
 
     @routes.post(API + "/homes/{home_id}/devices")
     async def register(home_id: str, request: Request, account: Account) -> Response:
-        body = await json_body(request, registration_schema)
+        body = await json_body(request, registration_schema, max_json_depth)
         key = await idempotency_key(request)
         given = await call(
             service.register(account, item_id(home_id), body["registration"], key, _answer)
@@ -141,6 +145,28 @@ def router(service: DevicesService, tokens: DeviceTokens) -> APIRouter:
         }
         return JSONResponse(body, headers=NO_STORE)
 
+    # The cloud link's control channel, whose path carries its major version.
+
+    @routes.websocket(link.PATH)
+    async def control_channel(websocket: WebSocket) -> None:
+        token = bearer(websocket.headers)
+        try:
+            if token is None:
+                raise errors.Unauthenticated("a bearer access token is needed")
+            opening = await links.open(token)
+        except errors.Unauthenticated as error:
+            # The device gets a new token, and connects again after its backoff.
+            log.info("a device's connection was refused", extra={"reason": str(error)})
+            refusal = Problem(401, str(error), headers=CHALLENGE)
+            await websocket.send_denial_response(refusal.response())
+            return
+        except errors.Unavailable as error:
+            # The device connects again after its backoff, to another replica.
+            await websocket.send_denial_response(Problem(503, str(error)).response())
+            return
+        await websocket.accept()
+        await links.serve(WebSocketChannel(websocket), opening)
+
     return routes
 
 
@@ -192,11 +218,14 @@ def _response(answer: Answer) -> Response:
     return JSONResponse(answer.body, answer.status, headers=NO_STORE)
 
 
-def _device(device: Device) -> dict[str, Any]:
-    return {
-        "id": str(device.id),
-        # Whether its control channel is open: none opens before the cloud serves the cloud
-        # link.
-        "connected": False,
-        "create_time": instant(device.create_time),
-    }
+def _device(shown: Shown) -> dict[str, Any]:
+    device = shown.device
+    body: dict[str, Any] = {"id": str(device.id)}
+    if device.description is not None:
+        # Absent until its first hello.
+        body["kind"] = device.description.kind
+        body["model"] = device.description.model
+        body["software"] = device.description.software
+    body["connected"] = shown.connected
+    body["create_time"] = instant(device.create_time)
+    return body

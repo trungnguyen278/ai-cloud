@@ -8,6 +8,7 @@ from typing import Any
 
 import httpx2
 import redis.asyncio
+from fastapi import FastAPI
 from sqlalchemy import text
 
 from ai_cloud.entry.settings import CloudSettings
@@ -84,12 +85,15 @@ class Cloud:
         self,
         http: httpx2.AsyncClient,
         *,
+        app: FastAPI,
         keys: SigningKeys,
         settings: CloudSettings,
         database: str,
         redis_url: str,
     ) -> None:
         self.http = http
+        # The application itself, which tests/link.py serves to devices over WebSockets.
+        self.app = app
         self.keys = keys
         self.settings = settings
         self.database = database
