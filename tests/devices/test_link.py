@@ -138,7 +138,7 @@ async def test_the_hellos_open_a_session(cloud) -> None:
     async with served(cloud) as url:
         async with linked(url, await token(cloud, device)) as link:
             answer = await link.open(protocol="3.7")
-            assert answer["protocol"] == "3.0"  # the lower of the two minors
+            assert answer["protocol"] == "3.1"  # the lower of the two minors
             assert answer["resumed"] is False
             assert uuid.UUID(answer["session"]).version == 7
             assert answer["ping_interval"] == cloud.settings.devices.link.ping_interval
@@ -175,43 +175,54 @@ async def _disconnected(cloud: Cloud, tokens: Any, home: Any, device: Device) ->
             id="another major",
         ),
         pytest.param(json.dumps(hello(protocol="03.1")), None, id="the major written 03"),
+        pytest.param(json.dumps(hello(protocol="3.0")), None, id="an older minor"),
         pytest.param(
             json.dumps(hello(protocol="2.9")), "unsupported_protocol", id="an older major"
         ),
-        pytest.param(json.dumps(hello(languages=[])), "no_hello", id="invalid"),
+        pytest.param(json.dumps({"type": "ping", "received": 0}), "no_hello", id="a ping"),
+        pytest.param(json.dumps(hello(languages=[])), "invalid_message", id="invalid"),
         pytest.param(
             json.dumps(hello(device={"kind": "robot", "model": "m", "software": "\ud800"})),
-            "no_hello",
+            "invalid_message",
             id="a lone surrogate where the schema takes any text",
+        ),
+        # PostgreSQL's text holds no U+0000: the hello fails before the cloud keeps it.
+        pytest.param(
+            json.dumps(hello(device={"kind": "robot", "model": "m", "software": "0.4" + chr(0)})),
+            "invalid_message",
+            id="U+0000 where the schema takes any text",
         ),
         pytest.param(
             json.dumps(
                 hello(events=[{"name": "x", "description": "x", "schema": {"maximum": 0}}])
             ).replace('"maximum": 0', '"maximum": NaN'),
-            "no_hello",
+            "invalid_message",
             id="NaN where the schema takes anything",
         ),
-        pytest.param(json.dumps(hello(protocol="3")), "no_hello", id="no minor"),
-        pytest.param(json.dumps({"type": "ping", "received": 0}), "no_hello", id="a ping"),
-        pytest.param("[1, 2]", "no_hello", id="no object"),
-        pytest.param("not JSON", "no_hello", id="no JSON"),
-        pytest.param('{"type": "hello", "x": NaN}', "no_hello", id="NaN"),
-        pytest.param('{"type": "hello", "x": "\\ud800"}', "no_hello", id="a lone surrogate"),
-        pytest.param(b"\x00binary", "no_hello", id="binary"),
-        pytest.param(DEEP, "no_hello", id="nested too deep"),
+        pytest.param(json.dumps(hello(protocol="3")), "invalid_message", id="no minor"),
+        pytest.param(json.dumps({"type": "ping"}), "invalid_message", id="a ping that fails"),
+        pytest.param("[1, 2]", "invalid_message", id="no object"),
+        pytest.param("not JSON", "invalid_message", id="no JSON"),
+        pytest.param('{"type": "hello", "x": NaN}', "invalid_message", id="NaN"),
+        pytest.param('{"type": "hello", "x": "\\ud800"}', "invalid_message", id="a lone surrogate"),
+        pytest.param(b"\x00binary", "invalid_message", id="binary"),
+        pytest.param(json.dumps(hello()).encode(), "invalid_message", id="a hello in binary"),
+        pytest.param(DEEP, "invalid_message", id="nested too deep"),
         pytest.param(
-            json.dumps(hello())[:-1] + ', "x": 1e400}', "no_hello", id="a number past a double"
+            json.dumps(hello())[:-1] + ', "x": 1e400}',
+            "invalid_message",
+            id="a number past a double",
         ),
         # The schema's uniqueItems compares what it holds; JSON Schema's own way takes a time
         # that grows as the square of their number, and recurses as deep as they nest.
         pytest.param(
             json.dumps(hello(languages=[{"n": n} for n in range(6000)])),
-            "no_hello",
+            "invalid_message",
             id="many items to compare",
         ),
         pytest.param(
             json.dumps(hello(languages=[json.loads("[" * 400 + "]" * 400)] * 2)),
-            "no_hello",
+            "invalid_message",
             id="nested items to compare",
         ),
     ],
@@ -226,6 +237,9 @@ async def test_a_first_message_that_is_no_hello_ends_the_session(
         if reason is None:
             assert answer["type"] == "hello"  # 03 is the major 3
             return
+        # What it could not answer, the bye says, for the device's logs (Messages, Validation).
+        if reason == "invalid_message":
+            assert answer.pop("message")
         assert answer == {"type": "bye", "reason": reason}
         assert await link.ended() == 1000
 
@@ -270,9 +284,6 @@ async def test_pings_say_what_was_received(cloud) -> None:
     _, _, device = await registered(cloud)
     async with served(cloud) as url, linked(url, await token(cloud, device)) as link:
         await link.open()
-        # What has no number that the schema allows counts for none.
-        await link.say({"type": "device.changed", "seq": True, "languages": ["vi"]})
-        await link.say({"type": "device.changed", "seq": 2**53, "languages": ["vi"]})
         await link.say({"type": "ping", "received": 0})
         assert await link.hear() == {"type": "pong", "received": 0}
         await link.say({"type": "device.changed", "seq": 1, "languages": ["en"]})
@@ -309,38 +320,43 @@ async def test_a_message_the_cloud_cannot_take_gets_an_error(cloud) -> None:
         )
         error = await link.hear()
         assert (error["seq"], error["reply_to"], error["code"]) == (2, 2, "unavailable")
-        # What the cloud does not take yet, or has no number, or is no JSON, it ignores.
+        # What the cloud does not take yet, or the cloud sends, or came already, it ignores.
         for ignored in (
             {"type": "mcp", "seq": 3, "payload": {"jsonrpc": "2.0", "method": "x"}},
             {"type": "something.new", "seq": 4},
             {"type": "error", "seq": 5, "reply_to": 1, "code": "busy", "message": "busy"},
-            {"type": "event", "name": "x"},
             {"type": "pong", "received": 0},
-            "not JSON",
-            b"binary",
-            # One message per text frame: a binary frame is no message, whatever it holds.
-            json.dumps({"type": "device.changed", "seq": 6, "languages": ["en"]}).encode(),
+            {"type": "reconnect"},
+            hello(),
         ):
             await link.say(ignored)
         await link.say({"type": "ping", "received": 2})
         assert await link.hear() == {"type": "pong", "received": 5}
-        # What it cannot read has no number it knows of either; a type that is no text is
-        # numbered, and fails the schema.
-        for unreadable in (DEEP, '{"type": "device.changed", "seq": 6, "x": 1e400}'):
-            await link.say(unreadable)
-        await link.say({"type": ["device.changed"], "seq": 6})
-        error = await link.hear()
-        assert (error["reply_to"], error["code"]) == (6, "invalid_message")
-        await link.say({"type": "ping", "received": 3})
-        assert await link.hear() == {"type": "pong", "received": 6}
 
 
-async def test_a_ping_the_cloud_cannot_read_ends_the_session(cloud) -> None:
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param({"type": "ping"}, id="a ping that fails"),
+        pytest.param("not JSON", id="no JSON"),
+        # One message per text frame: a binary frame is no message, whatever it holds.
+        pytest.param(
+            json.dumps({"type": "device.changed", "seq": 1, "languages": ["en"]}).encode(),
+            id="binary",
+        ),
+        pytest.param({"type": "event", "name": "x"}, id="no number"),
+        pytest.param({"type": ["device.changed"], "seq": 1}, id="a type that is no text"),
+        pytest.param('{"type": "device.changed", "seq": 1, "x": 1e400}', id="past a double"),
+    ],
+)
+async def test_a_frame_the_cloud_cannot_answer_ends_the_session(cloud, frame: Any) -> None:
     _, _, device = await registered(cloud)
     async with served(cloud) as url, linked(url, await token(cloud, device)) as link:
         await link.open()
-        await link.say({"type": "ping"})
-        assert await link.hear() == {"type": "bye", "reason": "error"}
+        await link.say(frame)
+        bye = await link.hear()
+        assert (bye["type"], bye["reason"]) == ("bye", "invalid_message")
+        assert bye["message"]
         assert await link.ended() == 1000
 
 
@@ -373,13 +389,31 @@ async def test_too_many_messages_are_dropped_and_said_so(make_cloud) -> None:
         assert await link.hear() == {"type": "pong", "received": 10}
 
 
-async def test_a_message_larger_than_the_protocol_allows_closes_the_connection(cloud) -> None:
+async def test_a_message_larger_than_the_protocol_allows_closes_the_connection(
+    cloud, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Whichever side received it, the session ends (Messages, Sizes)."""
     _, _, device = await registered(cloud)
-    async with served(cloud) as url, linked(url, await token(cloud, device)) as link:
-        await link.open()
-        text = json.dumps({"type": "event", "seq": 1, "pad": "x" * (1 << 20)})
-        await link.say(text)
-        assert await link.ended() == 1009
+    async with served(cloud) as url:
+        async with linked(url, await token(cloud, device)) as link:
+            await link.open()
+            text = json.dumps({"type": "event", "seq": 1, "pad": "x" * (1 << 20)})
+            await link.say(text)
+            assert await link.ended() == 1009
+        await until(lambda: _ended_as(caplog, ["too_big"]))
+        # The device's own 1009, over a message from the cloud.
+        async with linked(url, await token(cloud, device)) as link:
+            await link.open()
+            await link.ws.close(1009)
+        await until(lambda: _ended_as(caplog, ["too_big", "too_big"]))
+
+
+async def _ended_as(caplog: pytest.LogCaptureFixture, ended: list[str]) -> bool:
+    return [
+        each.ended  # type: ignore[attr-defined]
+        for each in caplog.records
+        if each.getMessage() == "a device's control channel closed"
+    ] == ended
 
 
 # Replaced and revoked.

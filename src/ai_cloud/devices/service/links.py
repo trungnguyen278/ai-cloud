@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """The devices' control channels: each connection's session, from the device's hello to its
-end, and what a replica of the api does for the sessions it holds (the cloud link 3.0,
+end, and what a replica of the api does for the sessions it holds (the cloud link 3.1,
 platform/protocols/cloud/README.md; docs/decisions/0011-control-channels.md).
 
 A connection opens once the device's access token verifies and the registry holds the
@@ -27,18 +27,28 @@ from uuid import UUID
 
 from ai_cloud.devices.domain import link
 from ai_cloud.devices.domain.errors import Unauthenticated, Unavailable
-from ai_cloud.devices.domain.link import Bye, Close, Code, DeviceHello, Number
+from ai_cloud.devices.domain.link import (
+    Bye,
+    Close,
+    Closed,
+    Code,
+    DeviceHello,
+    Message,
+    Number,
+    Unanswerable,
+)
 from ai_cloud.devices.domain.model import Opening
 from ai_cloud.devices.ports import Channel, Hints, Presence, Store
 from ai_cloud.devices.service.devices import DeviceTokens, hint
 from ai_cloud.devices.settings import LinkSettings
-from ai_cloud.shared.protocols import Schema, protocol_schema, read_json
+from ai_cloud.shared.protocols import Schema, protocol_schema
 
 log = logging.getLogger(__name__)
 
 # How a session ended, besides the reasons of the cloud's bye.
 RECONNECT = "reconnect"  # the cloud went away, and asked the device to connect again
 CLOSED = "closed"  # the connection was lost, or the device closed it
+TOO_BIG = "too_big"  # a message too large closed the connection, as invalid_message would
 DEVICE_BYE = "bye"  # the device ended the session
 SILENT = "silent"  # nothing came for two ping intervals
 STALLED = "stalled"  # nothing the cloud sent could leave for two ping intervals
@@ -264,8 +274,10 @@ class Session:
         self.hello: DeviceHello | None = None
         self.established = False
         self.left = False
-        # Why the cloud ends the session, once it does: its bye's reason, or reconnect.
+        # Why the cloud ends the session, once it does: its bye's reason, or reconnect; and
+        # what its bye says of it, if anything.
         self.ending: str | None = None
+        self._farewell: str | None = None
         self.closed = asyncio.Event()
         self.received = 0  # the number of the last message taken from the device
         self.sent = 0  # the number of the last message the cloud sent
@@ -278,11 +290,12 @@ class Session:
         self._dropping = False
         self._noted: set[str] = set()
 
-    def end(self, reason: str) -> None:
-        """End the session from the cloud's side: with ``bye`` and ``reason``, or with
-        ``reconnect``."""
+    def end(self, reason: str, message: str | None = None) -> None:
+        """End the session from the cloud's side: with ``bye`` and ``reason``, and
+        ``message`` for the device's logs, or with ``reconnect``."""
         if self.ending is None:
             self.ending = reason
+            self._farewell = message
             self._ended.set()
 
     def about(self) -> dict[str, str]:
@@ -318,12 +331,14 @@ class Session:
         first = await self._first()
         if isinstance(first, str):
             return first
-        if first.get("type") == "bye":
+        if first.type == "bye":
             await self._channel.close(Close.NORMAL)
             return DEVICE_BYE
         hello = link.read_hello(first, self._links.schema)
         if isinstance(hello, Bye):
             return await self._refuse(hello)
+        if isinstance(hello, Unanswerable):
+            return await self._refuse(Bye.INVALID_MESSAGE, hello.why)
         try:
             registered = await self._links.establish(self, hello)
         except Exception:
@@ -352,9 +367,9 @@ class Session:
             self._send({**ended, "reason": "lost"})
         return await self._carry()
 
-    async def _first(self) -> dict[str, Any] | str:
+    async def _first(self) -> Message | str:
         """The device's first message, which should be its hello; how the session ended if
-        none came."""
+        none came that the cloud can answer."""
         receiving = asyncio.create_task(self._channel.receive())
         ending = asyncio.create_task(self._ended.wait())
         try:
@@ -375,21 +390,16 @@ class Session:
         if receiving not in done:
             return await self._refuse(Bye.NO_HELLO)
         frame = receiving.result()
-        if frame is None:
-            return CLOSED
-        try:
-            message = (
-                read_json(frame, self._settings.max_json_depth) if isinstance(frame, str) else None
-            )
-        except ValueError:
-            message = None
-        if not isinstance(message, dict):
-            return await self._refuse(Bye.NO_HELLO)
-        return message
+        if isinstance(frame, Closed):
+            return _closed(frame)
+        first = link.read_message(frame)
+        if isinstance(first, Unanswerable):
+            return await self._refuse(Bye.INVALID_MESSAGE, first.why)
+        return first
 
-    async def _refuse(self, reason: Bye) -> str:
+    async def _refuse(self, reason: Bye, message: str | None = None) -> str:
         """End the session before it is carried: a bye, then close."""
-        await self._channel.send(link.encode(link.bye(reason)))
+        await self._channel.send(link.encode(link.bye(reason, message)))
         await self._channel.close(Close.NORMAL)
         return str(reason)
 
@@ -414,7 +424,7 @@ class Session:
                 ended, close = STALLED, Close.GOING_AWAY
             elif self.ending is not None:
                 ended = self.ending
-                self._outbox.put_nowait(link.encode(link.bye(Bye(self.ending))))
+                self._outbox.put_nowait(link.encode(link.bye(Bye(self.ending), self._farewell)))
             elif (failure := reading.exception()) is not None:
                 log.error(
                     "a device's session failed",
@@ -465,12 +475,9 @@ class Session:
                     frame = await self._channel.receive()
             except TimeoutError:
                 return SILENT
-            if frame is None:
-                return CLOSED
+            if isinstance(frame, Closed):
+                return _closed(frame)
             await self._bucket.take()
-            if isinstance(frame, bytes):
-                self._note("binary", "a device sent binary frames: they are ignored")
-                continue
             ended = self._take(frame)
             if ended is not None:
                 return ended
@@ -488,49 +495,45 @@ class Session:
 
     # Reading.
 
-    def _take(self, text: str) -> str | None:
-        """Take one message from the device; how the session ends, if it does."""
-        try:
-            message = read_json(text, self._settings.max_json_depth)
-        except ValueError:
-            self._note(
-                "unreadable", "a device sent messages the cloud cannot read: they are ignored"
-            )
-            return None
-        kind = message.get("type") if isinstance(message, dict) else None
-        # A type that is no text, such as a list, is a numbered message's: the schema fails it.
-        if isinstance(kind, str) and kind in link.UNNUMBERED:
-            return self._unnumbered(kind, message)
-        seq = link.seq_of(message)
-        if seq is None:
-            # No number for an error to answer (Errors).
-            self._note("seq", "a device sent messages without a number: they are ignored")
-            return None
-        match link.number(self.received, seq):
+    def _take(self, frame: str | bytes) -> str | None:
+        """Take one frame from the device; how the session ends, if it does."""
+        message = link.read_message(frame)
+        if isinstance(message, Unanswerable):
+            return self._unanswerable(message)
+        if message.seq is None:
+            return self._unnumbered(message)
+        match link.number(self.received, message.seq):
             case Number.DUPLICATE:
                 return None
             case Number.SKIPPED:
                 self.end(Bye.OUT_OF_SEQUENCE)
                 return str(Bye.OUT_OF_SEQUENCE)
-        self.received = seq
+        self.received = message.seq
         try:
-            self._inbox.put_nowait((seq, message))
+            self._inbox.put_nowait((message.seq, message.body))
         except asyncio.QueueFull:
-            self._drop(seq)
+            self._drop(message.seq)
         return None
 
-    def _unnumbered(self, kind: str, message: dict[str, Any]) -> str | None:
+    def _unnumbered(self, message: Message) -> str | None:
+        kind = message.type
         if kind == "bye":
             return DEVICE_BYE
+        if (problem := self._links.schema.problem(message.body)) is not None:
+            # A hello, a ping, a pong or a reconnect that fails has no number for an error to
+            # answer (Messages, Validation).
+            return self._unanswerable(Unanswerable(f"{kind}: {problem}"))
         if kind != "ping":
+            # The hello came already, and the others are the cloud's to send.
             self._note(kind, f"a device sent {kind} messages in its session: they are ignored")
             return None
-        if self._links.schema.problem(message) is not None:
-            # A side that cannot handle a ping ends the session (Errors).
-            self.end(Bye.ERROR)
-            return str(Bye.ERROR)
         self._outbox.put_nowait(link.encode({"type": "pong", "received": self.received}))
         return None
+
+    def _unanswerable(self, frame: Unanswerable) -> str:
+        """End the session over a frame that it cannot answer (Messages, Validation)."""
+        self.end(Bye.INVALID_MESSAGE, frame.why)
+        return str(Bye.INVALID_MESSAGE)
 
     def _drop(self, seq: int) -> None:
         """Drop the message ``seq``: as many as the backlog holds wait their turn. The device
@@ -579,6 +582,13 @@ class Session:
         if key not in self._noted:
             self._noted.add(key)
             log.info(text, extra={"device": str(self.device_id), **self.about(), **about})
+
+
+def _closed(closed: Closed) -> str:
+    """How a session ended whose connection closed: a message too large ends it as
+    ``invalid_message`` would, for its sender would send it again on a resumed one (Messages,
+    Sizes)."""
+    return TOO_BIG if closed.code == Close.TOO_BIG else CLOSED
 
 
 class Bucket:

@@ -16,7 +16,7 @@ from uuid import UUID
 
 import jwt
 
-from ai_cloud.devices.domain.errors import AssertionInvalid
+from ai_cloud.devices.domain.errors import AssertionInvalid, AssertionMalformed
 from ai_cloud.devices.domain.model import identifier
 from ai_cloud.shared.jose import ALGORITHM, failure, p256_public_key
 
@@ -43,17 +43,17 @@ class Asserted:
 
 def key_of(assertion: str) -> str:
     """The thumbprint of the key that the assertion names, its kid, before anything is
-    verified. ``AssertionInvalid`` if it names none, or is not a device's assertion."""
+    verified. ``AssertionMalformed`` if it names none, or is not a device's assertion."""
     try:
         header = jwt.get_unverified_header(assertion)
     except jwt.PyJWTError:
-        raise AssertionInvalid("malformed") from None
+        raise AssertionMalformed("malformed") from None
     typ = header.get("typ")
     if not isinstance(typ, str) or typ.upper() != _TYPE:
-        raise AssertionInvalid("not a JWT")
+        raise AssertionMalformed("not a JWT")
     kid = header.get("kid")
     if not isinstance(kid, str) or _THUMBPRINT.fullmatch(kid) is None:
-        raise AssertionInvalid("names no key")
+        raise AssertionMalformed("names no key")
     return kid
 
 

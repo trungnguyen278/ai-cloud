@@ -76,18 +76,30 @@ async def test_a_new_home_is_checked(cloud, body: dict[str, Any]) -> None:
     assert (await cloud.http.get("/app/v1/homes", headers=bearer(tokens))).json()["homes"] == []
 
 
-async def test_a_body_nests_as_deep_as_the_configuration_says(make_cloud) -> None:
-    cloud = await make_cloud(app_api={"max_json_depth": 1})
+DEEP = (
+    "the body is not JSON that the cloud reads: "
+    "its arrays and objects nest deeper than the cloud reads"
+)
+
+
+async def test_a_body_nests_as_deep_as_the_protocols_say(cloud) -> None:
+    """64 levels, counting the body's own object (ai-platform's ADR-0014, decision 3)."""
     tokens = await cloud.sign_in()
-    # A home's languages are an array in an object: two levels.
-    refused = await cloud.http.post("/app/v1/homes", json=HOME, headers=once(tokens))
-    assert problem(refused, 400)["detail"] == "the body is not JSON"
-    deep = await cloud.http.post(
-        "/app/v1/homes",
-        content=b"[" * 1000 + b"]" * 1000,
-        headers={**once(tokens), "Content-Type": "application/json"},
-    )
-    assert problem(deep, 400)["detail"] == "the body is not JSON"
+
+    def nested(depth: int) -> bytes:
+        languages = "[" * (depth - 1) + '"en"' + "]" * (depth - 1)
+        return f'{{"name": "Home", "time_zone": "UTC", "languages": {languages}}}'.encode()
+
+    async def posted(body: bytes) -> Any:
+        return await cloud.http.post(
+            "/app/v1/homes",
+            content=body,
+            headers={**once(tokens), "Content-Type": "application/json"},
+        )
+
+    # Read, and failing the schema.
+    assert problem(await posted(nested(64)), 400)["detail"] != DEEP
+    assert problem(await posted(nested(65)), 400)["detail"] == DEEP
 
 
 @pytest.mark.parametrize("zone", ["Asia/Ho_Chi_Minh", "Asia/Saigon", "UTC", "America/New_York"])

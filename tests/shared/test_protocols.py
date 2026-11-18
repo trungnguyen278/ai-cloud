@@ -12,6 +12,7 @@ from ai_cloud.shared import protocols
 from ai_cloud.shared.protocols import (
     PLATFORM_DIR_ENV,
     Schema,
+    Unreadable,
     ecma_end,
     platform_dir,
     protocol_schema,
@@ -19,7 +20,7 @@ from ai_cloud.shared.protocols import (
 )
 
 TOKEN = "eyJ" + "s3cr3t" * 2000
-DEPTH = 64  # as the configuration's max_json_depth, but the tests do not read it
+DEPTH = 64  # the protocols' (ai-platform's ADR-0014, decision 3): the tests do not read the cloud's
 
 
 def test_the_platform_is_this_checkout_s() -> None:
@@ -139,29 +140,95 @@ def test_a_shorthand_would_be_noticed(pattern: str) -> None:
     assert _SHORTHANDS.search(pattern) is not None
 
 
+DEEP = "its arrays and objects nest deeper than the cloud reads"
+UNHELD = "it holds U+0000 or a lone surrogate, which no side holds"
+NOT_JSON = "it is not JSON"
+PAST_RANGE = "a number is past a double's range"
+REPEATED = "an object repeats a name"
+
+
 @pytest.mark.parametrize(
-    "text",
+    ("text", "why"),
     [
-        pytest.param("[" * 20_000 + "]" * 20_000, id="nested too deep"),
-        pytest.param("[" * 500_000 + "]" * 500_000, id="nested past Python's reader"),
-        pytest.param('{"x": 1e400}', id="a number past a double"),
-        pytest.param("-1e400", id="past a double below"),
-        pytest.param('{"x": NaN}', id="NaN"),
-        pytest.param("[Infinity]", id="Infinity"),
-        pytest.param('"\\ud800"', id="a lone surrogate"),
-        pytest.param(b"\xff", id="no UTF-8"),
-        pytest.param("not JSON", id="no JSON"),
+        pytest.param("[" * 20_000 + "]" * 20_000, DEEP, id="nested too deep"),
+        pytest.param("[" * 500_000 + "]" * 500_000, DEEP, id="nested past Python's reader"),
+        pytest.param("[" * 65, DEEP, id="nested too deep, and never closed"),
+        pytest.param('{"a": 1, "a": 1}', REPEATED, id="a repeated name"),
+        pytest.param('[{"a": {"b": 1, "c": 2, "b": 3}}]', REPEATED, id="a repeated name within"),
+        # What json would drop, keeping the last value of a name, is refused all the same.
+        pytest.param('{"x": "\\u0000", "x": "ok"}', REPEATED, id="U+0000 dropped"),
+        pytest.param('{"x": "\\ud800", "x": "ok"}', REPEATED, id="a lone surrogate dropped"),
+        pytest.param('{"x": {"\\u0000": 1}, "x": 1}', REPEATED, id="U+0000 in a name dropped"),
+        # Depth first, counted on the text: the same answer on every machine.
+        pytest.param(
+            '{"x": ' + "[" * 100 + "]" * 100 + ', "x": 1}', DEEP, id="nested too deep, dropped"
+        ),
+        pytest.param(
+            '{"x": ' + "[" * 15_000 + "]" * 15_000 + ', "x": 1}',
+            DEEP,
+            id="nested past Python's reader on Windows, dropped",
+        ),
+        pytest.param('{"x": 1e400}', PAST_RANGE, id="past a double"),
+        pytest.param("-1e400", PAST_RANGE, id="past a double below"),
+        pytest.param('{"x": NaN}', "a number is not finite", id="NaN"),
+        pytest.param("[Infinity]", "a number is not finite", id="Infinity"),
+        pytest.param('"\\ud800"', UNHELD, id="a lone surrogate"),
+        pytest.param('["x", "\\udc00y"]', UNHELD, id="a lone low surrogate"),
+        pytest.param('"a\\u0000"', UNHELD, id="U+0000"),
+        pytest.param('{"a\\u0000": 1}', UNHELD, id="U+0000 in a name"),
+        pytest.param('{"a": ["x", {"b": "\\u0000"}]}', UNHELD, id="U+0000 in a value"),
+        pytest.param('{"\\ud800": 1}', UNHELD, id="a lone surrogate in a name"),
+        pytest.param(b"\xff", "it is not UTF-8", id="no UTF-8"),
+        pytest.param('{"x": 1}'.encode("utf-16"), "it is not UTF-8", id="UTF-16"),
+        pytest.param(b"\xed\xa0\x80", "it is not UTF-8", id="a surrogate in UTF-8"),
+        pytest.param(b'\xef\xbb\xbf{"x": 1}', NOT_JSON, id="a byte order mark"),
+        pytest.param('"a\x00"', NOT_JSON, id="a control character unescaped"),
+        pytest.param("1" + "0" * 400, PAST_RANGE, id="an integer past a double"),
+        pytest.param("[-1" + "0" * 400 + "]", PAST_RANGE, id="an integer past a double below"),
+        pytest.param("1" * 5000, PAST_RANGE, id="an integer longer than Python reads"),
+        pytest.param("not JSON", NOT_JSON, id="no JSON"),
+        # A string that never closes runs to the end of the text, with what it holds.
+        pytest.param('["' + "[" * 100, NOT_JSON, id="a string never closed"),
     ],
 )
-def test_what_is_not_json_is_a_value_error(text: str | bytes) -> None:
-    with pytest.raises(ValueError) as raised:
-        read_json(text, DEPTH)
-    # It names no value: neither the character nor the byte.
-    assert not re.search("d800|ff|NaN|Infinity|1e400", str(raised.value), re.IGNORECASE)
+def test_what_is_not_json_every_side_holds_is_unreadable(text: str | bytes, why: str) -> None:
+    """Whatever is wrong, the same error, whose message is the cloud's own: it names no
+    value, neither a character nor a byte, nor where it is (ai-platform's ADR-0014)."""
+    with pytest.raises(Unreadable) as raised:
+        read_json(text)
+    assert str(raised.value) == why
+
+
+def test_what_no_side_holds_is_found_down_to_the_deepest_level() -> None:
+    within = _nested(DEPTH - 1).replace("1", '"x"')
+    read_json(f"[{within}]")
+    for unheld in ('"\\u0000"', '"\\udfff"'):
+        with pytest.raises(Unreadable):
+            read_json(f"[{within.replace('"x"', unheld)}]")
+        with pytest.raises(Unreadable):
+            read_json(_nested(DEPTH, objects_from=DEPTH).replace('"x"', f"{unheld}"))
+
+
+def test_what_i_json_forbids_and_the_cloud_holds_is_read() -> None:
+    """Noncharacters, and numbers more precise than a double: ADR-0014 lets a receiver take
+    them, and the cloud holds them as they come."""
+    assert read_json('"\\uffff\\ufdd0"') == "\uffff\ufdd0"
+    assert read_json(str(2**53 + 1)) == 2**53 + 1
+    assert read_json("1" + "0" * 308) == 10**308
+    # A pair of surrogates is the character it encodes.
+    assert read_json('"\\ud83d\\ude00"') == "\U0001f600"
+    # The same name in different objects is no repeated name.
+    assert read_json('[{"a": {"a": 1}}, {"a": 2}]') == [{"a": {"a": 1}}, {"a": 2}]
 
 
 def test_json_is_read() -> None:
-    assert read_json(b'{"x": [1.5, 1e300, -0, "\\u0041"]}', DEPTH) == {"x": [1.5, 1e300, 0, "A"]}
+    assert read_json(b'{"x": [1.5, 1e300, -0, "\\u0041"]}') == {"x": [1.5, 1e300, 0, "A"]}
+    assert read_json("1") == 1
+    # Each closes what it opened: siblings nest no deeper than one of them.
+    assert (
+        read_json(f"[{', '.join(['{}'] * DEPTH)}, {', '.join(['[]'] * DEPTH)}]")
+        == [{}] * DEPTH + [[]] * DEPTH
+    )
 
 
 def _nested(levels: int, *, objects_from: int = 0) -> str:
@@ -175,26 +242,43 @@ def _nested(levels: int, *, objects_from: int = 0) -> str:
 
 @pytest.mark.parametrize("objects_from", [0, 1, 2, 33])
 def test_json_is_read_down_to_the_depth_and_no_further(objects_from: int) -> None:
-    """``max_depth`` counts levels of arrays and objects, mixed or not; Python's reader is
-    not what limits it (it reads 20,000 deep on Linux)."""
-    read_json(_nested(DEPTH, objects_from=objects_from), DEPTH)
+    """The depth counts levels of arrays and objects, mixed or not; Python's reader is not
+    what limits it (it reads 20,000 deep on Linux)."""
+    read_json(_nested(DEPTH, objects_from=objects_from))
     with pytest.raises(ValueError):
-        read_json(_nested(DEPTH + 1, objects_from=objects_from), DEPTH)
+        read_json(_nested(DEPTH + 1, objects_from=objects_from))
 
 
-def test_the_depth_is_what_the_caller_gives() -> None:
-    assert read_json("[[1]]", 2) == [[1]]
-    with pytest.raises(ValueError):
-        read_json("[[1]]", 1)
-    assert read_json("1", 1) == 1
+def test_brackets_in_strings_nest_nothing() -> None:
+    """Nor do they close anything, and an escaped quote ends no string."""
+    text = "[" * 100 + '\\"' + "]" * 100
+    assert read_json(f'["{text}", {{"]]{text}": "{{{{"}}]') == [
+        text.replace("\\", ""),
+        {f"]]{text.replace('\\', '')}": "{{"},
+    ]
+    with pytest.raises(Unreadable):
+        read_json(_nested(DEPTH + 1).replace("1", '"]]]"'))
+    # An escaped quote ends no string, and an escaped backslash escapes no quote.
+    for string in ('"\\""', '"\\\\"'):
+        with pytest.raises(Unreadable):
+            read_json(f"[{string}, {_nested(DEPTH)}]")
 
 
 def test_the_depth_counts_levels_in_every_branch() -> None:
     """The deepest branch comes last, behind branches that reach the limit and no further."""
     within = ",".join([_nested(DEPTH - 1)] * 3)
-    read_json(f"[{within}]", DEPTH)
+    read_json(f"[{within}]")
     with pytest.raises(ValueError):
-        read_json(f"[{within},{_nested(DEPTH)}]", DEPTH)
+        read_json(f"[{within},{_nested(DEPTH)}]")
+
+
+def test_a_string_of_escaped_quotes_is_read_in_linear_time() -> None:
+    """Each escaped quote could start a string, as a pattern sees it: one that tried them all
+    took 6.4 s for 20,000 of them on Windows (2026-11-19), and these take milliseconds."""
+    started = time.monotonic()
+    with pytest.raises(Unreadable):
+        read_json('"' + '\\"' * 20_000)
+    assert time.monotonic() - started < 1
 
 
 def _arrays(schema: Any) -> Iterator[dict[str, Any]]:

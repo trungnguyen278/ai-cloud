@@ -24,7 +24,7 @@ from pydantic import Field
 from ai_cloud.shared.config import Settings
 from ai_cloud.shared.oauth import CHALLENGE, NO_STORE, bearer, media_type
 from ai_cloud.shared.problems import Problem
-from ai_cloud.shared.protocols import Schema, read_json
+from ai_cloud.shared.protocols import Schema, Unreadable, read_json
 
 __all__ = [
     "API",
@@ -69,8 +69,6 @@ _JSON = "application/json"
 class AppApiSettings(Settings):
     # Seconds a retry with an Idempotency-Key gets the first answer (idempotency_retention).
     idempotency_retention: Annotated[int, Field(ge=1)]
-    # How deep a body may nest its arrays and objects: deeper, it is not JSON the API reads.
-    max_json_depth: Annotated[int, Field(ge=1)]
 
 
 @dataclass(frozen=True)
@@ -124,15 +122,16 @@ def bearer_token(request: Request) -> str:
     return token
 
 
-async def json_body(request: Request, schema: Schema, max_depth: int) -> dict[str, Any]:
-    """The request's JSON body, nested at most ``max_depth`` deep and checked against
-    ``schema``."""
+async def json_body(request: Request, schema: Schema) -> dict[str, Any]:
+    """The request's JSON body, which every side can hold (ai-platform's ADR-0014), and
+    checked against ``schema``: ``400`` otherwise, whatever is
+    wrong (the app API 1.6, The cloud's address)."""
     if media_type(request) != _JSON:
         raise Problem(415, f"the body must be {_JSON}")
     try:
-        body = read_json(await request.body(), max_depth)
-    except ValueError:
-        raise Problem(400, "the body is not JSON") from None
+        body = read_json(await request.body())
+    except Unreadable as why:
+        raise Problem(400, f"the body is not JSON that the cloud reads: {why}") from None
     if (problem := schema.problem(body)) is not None:
         raise Problem(400, problem)
     return body

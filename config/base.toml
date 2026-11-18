@@ -107,12 +107,6 @@ max_deliveries = 20
 #
 # Seconds a retry with an Idempotency-Key gets the first answer: 24 hours.
 idempotency_retention = 86_400
-# How deep a body may nest its arrays and objects at most; deeper, the API answers that it
-# is not JSON. RFC 8259 lets a reader limit it (section 9), and the protocol names no depth:
-# its bodies nest a few levels. 64 is .NET's System.Text.Json default (JsonReaderOptions.
-# MaxDepth). Python's json has a limit of its own, which the C stack sets: some 11,000 deep
-# on Windows, more on Linux; this one is the same on every machine.
-max_json_depth = 64
 
 [accounts]
 # Signing in, the account, and homes (ai-platform's app API:
@@ -228,10 +222,6 @@ ping_interval = 20
 rate = 50
 burst = 100
 backlog = 500
-# How deep a device's message may nest its arrays and objects at most; deeper, the cloud
-# cannot read it (REL-4). As [app_api] max_json_depth, and for its reasons: the cloud link
-# names no depth, and its messages nest a few levels.
-max_json_depth = 64
 # Seconds between two checks of a replica's connections against the registry and the
 # presence: the longest that a lost hint delays the bye of a device removed or replaced.
 check_interval = 20

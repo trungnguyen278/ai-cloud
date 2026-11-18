@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The devices' use cases: challenges, registrations, a home's devices and their names, the
 devices' access tokens, and what goes when a home or an account does (ai-platform ADR-0012 and
-ADR-0013, its app API 1.5, and the cloud link 3.0). A device removed, or gone with its home,
+ADR-0013, its app API 1.6, and the cloud link 3.1). A device removed, or gone with its home,
 is hinted at, so that its control channel ends (docs/decisions/0011-control-channels.md).
 
 A registration and a removal hold their home, as the ports say. A registration uses its
@@ -334,7 +334,8 @@ class DeviceTokens:
     async def issue(self, address: str, signed: str, client_id: str | None) -> DeviceToken:
         """An access token for the device whose key signed ``signed``, asked for from
         ``address``. ``client_id``, if the request has one, names the same device (RFC 7521,
-        4.2). ``UnknownDevice`` if the cloud holds no such key; ``AssertionInvalid`` if the
+        4.2). ``AssertionMalformed`` if the assertion is no JWT or names no key;
+        ``UnknownDevice`` if the cloud holds no such key; ``AssertionInvalid`` if the
         assertion does not verify, or was used before."""
         subject = address_subject(address, self._settings.token_rate.ipv6_prefix)
         wait = await self._token_rate.wait(subject)

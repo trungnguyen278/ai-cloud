@@ -75,9 +75,7 @@ class Devices:
             presence=presence,
             hints=hints,
         )
-        self.router = router(
-            service, device_tokens, self._links, max_json_depth=app_api.max_json_depth
-        )
+        self.router = router(service, device_tokens, self._links)
 
     async def run(self, stop: asyncio.Event) -> None:
         """Check the control channels that this process holds, until ``stop`` is set."""
