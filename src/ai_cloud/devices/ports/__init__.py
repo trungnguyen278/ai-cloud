@@ -9,6 +9,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
+from ai_cloud.devices.domain.link import Closed
 from ai_cloud.devices.domain.model import (
     Access,
     Answer,
@@ -193,9 +194,9 @@ class Channel(Protocol):
     Modules). Sending on, or closing, a channel that is gone does nothing: what receives from
     it learns that it is gone."""
 
-    async def receive(self) -> str | bytes | None:
-        """The device's next message: text, or bytes for a binary one; ``None`` once the
-        channel is closed."""
+    async def receive(self) -> str | bytes | Closed:
+        """The device's next message: text, or bytes for a binary one; once the channel is
+        closed, how it closed."""
         ...
 
     async def send(self, text: str) -> None: ...

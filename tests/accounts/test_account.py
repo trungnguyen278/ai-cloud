@@ -99,23 +99,48 @@ async def test_a_lone_surrogate_is_no_text(cloud) -> None:
     problem(broken, 400)
 
 
+# Why the cloud does not read a body, as its problem says (ai-platform's ADR-0014).
+UNHELD = "it holds U+0000 or a lone surrogate, which no side holds"
+
+
 @pytest.mark.parametrize(
-    "body",
+    ("body", "why"),
     [
-        pytest.param(b"[" * 20_000 + b"]" * 20_000, id="nested too deep"),
-        # Python reads this on every machine; the configuration's max_json_depth does not.
-        pytest.param(b"[" * 1000 + b"]" * 1000, id="nested past the configured depth"),
-        pytest.param(b'{"display_name": 1e400}', id="a number past a double"),
+        pytest.param(
+            b"[" * 20_000 + b"]" * 20_000,
+            "its arrays and objects nest deeper than the cloud reads",
+            id="nested too deep",
+        ),
+        # Python reads this on every machine; the protocols do not (ADR-0014, decision 3).
+        pytest.param(
+            b"[" * 65 + b"]" * 65,
+            "its arrays and objects nest deeper than the cloud reads",
+            id="nested past the protocols' depth",
+        ),
+        # Python's reader would keep the last, and drop the first unread.
+        pytest.param(
+            b'{"display_name": "Linh\\u0000", "display_name": "Linh"}',
+            "an object repeats a name",
+            id="a repeated name",
+        ),
+        pytest.param(
+            b'{"display_name": 1e400}', "a number is past a double's range", id="past a double"
+        ),
+        # PostgreSQL's text holds no U+0000: the body is refused before it is kept.
+        pytest.param(b'{"display_name": "Linh\\u0000"}', UNHELD, id="U+0000"),
+        pytest.param(b'{"display_name\\u0000": "Linh"}', UNHELD, id="U+0000 in a name"),
+        pytest.param(b'{"display_name": "Linh\xff"}', "it is not UTF-8", id="no UTF-8"),
+        pytest.param(b'{"display_name": "Linh"', "it is not JSON", id="no JSON"),
     ],
 )
-async def test_json_the_cloud_cannot_read_is_refused(cloud, body: bytes) -> None:
+async def test_json_the_cloud_cannot_read_is_refused(cloud, body: bytes, why: str) -> None:
     tokens = await cloud.sign_in()
     broken = await cloud.http.patch(
         "/app/v1/account",
         content=body,
         headers={**bearer(tokens), "Content-Type": "application/json"},
     )
-    assert problem(broken, 400)["detail"] == "the body is not JSON"
+    assert problem(broken, 400)["detail"] == f"the body is not JSON that the cloud reads: {why}"
 
 
 async def test_linking_another_identity(cloud) -> None:

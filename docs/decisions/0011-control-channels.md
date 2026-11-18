@@ -1,6 +1,6 @@
 # 0011 — The devices' control channels: sessions in the replica that holds them, presence and hints in Redis, and checks against the registry
 
-- **Status:** Accepted
+- **Status:** Accepted. Decision 1's frames that the cloud cannot read, and decision 10's message too large, are amended by the cloud link 3.1 ([ai-platform ADR-0014](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0014-json-every-side-can-hold.md)): a frame that the cloud cannot answer ends the session with `bye` `invalid_message`, before the hello as after it, and a connection closed with 1009 ends its session. The depth that the cloud reads is the protocols' 64, no longer `[devices.link] max_json_depth` (dev log, 2026-11-18).
 - **Date:** 2026-11-11
 
 ## Context

@@ -124,6 +124,10 @@ async def test_a_deleted_home_s_device_gets_no_token(cloud) -> None:
 
 # What a broken or forged assertion changes, from the time and the cloud it is made for.
 type Changes = Callable[[int, Cloud], dict[str, Any]]
+# What the cloud reads of an assertion before it knows the key: when it fails, the assertion
+# is malformed. Any other check fails an assertion of a key the cloud holds (the cloud link
+# 3.1, Tokens from the server).
+MALFORMED = ("not a JWT", "names no key")
 
 
 @pytest.mark.parametrize(
@@ -197,7 +201,15 @@ async def test_what_an_assertion_must_be(cloud, changes: Changes, why: str) -> N
     _, _, device = await registered(cloud)
     assertion = device.assertion(cloud.token_endpoint, **changes(int(time.time()), cloud))
     response = await cloud.device_token(assertion)
-    assert oauth_error(response, "invalid_request").startswith(why)
+    error = "invalid_request" if why in MALFORMED else "invalid_grant"
+    assert oauth_error(response, error).startswith(why)
+
+
+@pytest.mark.parametrize("assertion", ["not a JWT", "a.b.c"])
+async def test_an_assertion_that_is_no_jwt_is_malformed(cloud, assertion: str) -> None:
+    await registered(cloud)
+    response = await cloud.device_token(assertion)
+    assert oauth_error(response, "invalid_request") == "malformed"
 
 
 async def test_another_device_s_identity_is_not_its_own(cloud) -> None:
@@ -206,11 +218,11 @@ async def test_another_device_s_identity_is_not_its_own(cloud) -> None:
     await cloud.add_device(tokens, home, other)
     claims = {"iss": str(other.id), "sub": str(other.id)}
     response = await cloud.device_token(device.assertion(cloud.token_endpoint, claims=claims))
-    oauth_error(response, "invalid_request")
+    oauth_error(response, "invalid_grant")
     # Its key's name, with its own signature: the signature fails.
     header = {"kid": other.thumbprint}
     response = await cloud.device_token(device.assertion(cloud.token_endpoint, header=header))
-    assert oauth_error(response, "invalid_request") == "bad signature"
+    assert oauth_error(response, "invalid_grant") == "bad signature"
 
 
 async def test_no_other_algorithm_passes(cloud) -> None:
@@ -227,7 +239,7 @@ async def test_no_other_algorithm_passes(cloud) -> None:
     # The algorithm confusion of RFC 8725, 2.1: the public key as an HMAC secret.
     confused = hs256(claims, public_pem(device.key), kid=device.thumbprint)
     response = await cloud.device_token(confused)
-    assert oauth_error(response, "invalid_request") == "wrong algorithm"
+    assert oauth_error(response, "invalid_grant") == "wrong algorithm"
 
 
 async def test_what_the_clocks_may_disagree_by_is_allowed(cloud) -> None:
@@ -259,7 +271,7 @@ async def test_an_assertion_works_once(cloud) -> None:
     assertion = device.assertion(cloud.token_endpoint)
     issued(await cloud.device_token(assertion))
     again = await cloud.device_token(assertion)
-    assert oauth_error(again, "invalid_request") == "this assertion was used before"
+    assert oauth_error(again, "invalid_grant") == "this assertion was used before"
     # A new one works.
     issued(await cloud.device_token(device.assertion(cloud.token_endpoint)))
 
@@ -299,7 +311,7 @@ async def test_a_client_id_names_the_device(cloud) -> None:
     response = await cloud.device_token(
         device.assertion(cloud.token_endpoint), client_id=str(uuid.uuid7())
     )
-    assert oauth_error(response, "invalid_request") == "client_id names another device"
+    assert oauth_error(response, "invalid_grant") == "client_id names another device"
 
 
 @pytest.mark.parametrize(
@@ -381,7 +393,7 @@ async def test_no_assertion_or_token_reaches_the_logs(cloud, caplog) -> None:
     assertion = device.assertion(cloud.token_endpoint)
     token = issued(await cloud.device_token(assertion))["access_token"]
     used = await cloud.device_token(assertion)
-    oauth_error(used, "invalid_request")
+    oauth_error(used, "invalid_grant")
     logged = "\n".join(f"{record.getMessage()} {record.__dict__}" for record in caplog.records)
     for secret in (assertion, assertion.split(".")[1], token, token.split(".")[2]):
         assert secret not in logged

@@ -61,10 +61,8 @@ _STATUSES: StatusProblems = {
 }
 
 
-def router(
-    service: DevicesService, tokens: DeviceTokens, links: Links, *, max_json_depth: int
-) -> APIRouter:
-    """The devices' routes. A body nests at most ``max_json_depth`` deep."""
+def router(service: DevicesService, tokens: DeviceTokens, links: Links) -> APIRouter:
+    """The devices' routes."""
     registration_schema = protocol_schema(PROTOCOL, "device_registration")
     update_schema = protocol_schema(PROTOCOL, "device_update")
 
@@ -86,7 +84,7 @@ def router(
 
     @routes.post(API + "/homes/{home_id}/devices")
     async def register(home_id: str, request: Request, account: Account) -> Response:
-        body = await json_body(request, registration_schema, max_json_depth)
+        body = await json_body(request, registration_schema)
         key = await idempotency_key(request)
         given = await call(
             service.register(
@@ -114,7 +112,7 @@ def router(
     async def rename_device(
         home_id: str, device_id: str, request: Request, account: Account
     ) -> Response:
-        body = await json_body(request, update_schema, max_json_depth)
+        body = await json_body(request, update_schema)
         if_match = request.headers.get("if-match")
         device = await call(
             service.rename(account, item_id(home_id), item_id(device_id), body["name"], if_match)
@@ -201,8 +199,11 @@ def _problem(error: errors.DevicesError) -> Problem:
 
 def _refused(error: errors.DevicesError) -> OAuthError:
     """How the token endpoint answers a device it refuses: ``invalid_client`` only for a key it
-    does not hold, after which the device offers set-up. It tries again after its backoff
-    after any other refusal (the cloud link, Tokens from the server)."""
+    does not hold, after which the device offers set-up; ``invalid_grant`` for an assertion
+    of a key it holds that fails, as RFC 6749 answers a grant that is invalid (5.2), not
+    RFC 7523's ``invalid_client``, after which a clock far off would unbind a device. It
+    tries again after its backoff after any refusal but the first (the cloud link 3.1,
+    Tokens from the server)."""
     match error:
         case errors.RateLimited():
             # Not logged: a flood would fill the logs.
@@ -211,6 +212,8 @@ def _refused(error: errors.DevicesError) -> OAuthError:
         case errors.UnknownDevice():
             refused = OAuthError("invalid_client", str(error), 401)
         case errors.AssertionInvalid():
+            refused = OAuthError("invalid_grant", str(error))
+        case errors.AssertionMalformed():
             refused = OAuthError("invalid_request", str(error))
         case _:
             raise error

@@ -315,7 +315,10 @@ async def test_a_registration_nested_past_the_configured_depth_is_refused(cloud)
         content=b"[" * 1000 + b"]" * 1000,
         headers={**once(family.owner), "Content-Type": "application/json"},
     )
-    assert problem(response, 400)["detail"] == "the body is not JSON"
+    assert problem(response, 400)["detail"] == (
+        "the body is not JSON that the cloud reads: "
+        "its arrays and objects nest deeper than the cloud reads"
+    )
 
 
 async def test_a_registration_needs_an_idempotency_key(cloud) -> None:

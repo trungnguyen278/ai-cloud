@@ -232,3 +232,10 @@ def test_an_error_s_message_is_as_long_as_the_cloud_link_allows() -> None:
     error = link.error(7, link.Code.INTERNAL, "x" * 2000)
     assert error == {"type": "error", "reply_to": 7, "code": "internal", "message": "x" * 1024}
     assert protocol_schema("cloud", "error").problem(error) is None
+
+
+def test_a_bye_s_message_is_as_long_as_the_cloud_link_allows() -> None:
+    bye = link.bye(link.Bye.INVALID_MESSAGE, "x" * 2000)
+    assert bye == {"type": "bye", "reason": "invalid_message", "message": "x" * 256}
+    assert protocol_schema("cloud", "bye").problem(bye) is None
+    assert link.bye(link.Bye.NO_HELLO) == {"type": "bye", "reason": "no_hello"}

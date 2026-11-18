@@ -33,8 +33,6 @@ class LinkSettings(Settings):
     rate: Annotated[float, Field(gt=0)]
     burst: Annotated[int, Field(ge=1)]
     backlog: Annotated[int, Field(ge=1)]
-    # How deep a device's message may nest its arrays and objects: deeper, it is unreadable.
-    max_json_depth: Annotated[int, Field(ge=1)]
     # Seconds between two checks of a replica's connections against the registry and the
     # presence, and between two tries to hear hints after Redis failed: the longest that a
     # lost hint delays a bye.

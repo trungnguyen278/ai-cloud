@@ -61,6 +61,10 @@ class UnknownDevice(DevicesError):
     or revoked. The device offers set-up."""
 
 
+class AssertionMalformed(DevicesError):
+    """A device's assertion is no JWT, or names no key: the device tries again later."""
+
+
 class AssertionInvalid(DevicesError):
     """A device's assertion does not verify, or is used again, although the cloud holds its
     key: the device tries again later."""

@@ -16,6 +16,7 @@ import pytest
 from link import DEEP, hello
 
 from ai_cloud.devices.domain.errors import Unavailable
+from ai_cloud.devices.domain.link import Closed
 from ai_cloud.devices.domain.model import Description, Opening, TokenHolder
 from ai_cloud.devices.service.links import RECONNECT, Links
 from ai_cloud.devices.settings import LinkSettings
@@ -29,7 +30,6 @@ SETTINGS = LinkSettings(
     rate=1000,
     burst=1000,
     backlog=10,
-    max_json_depth=64,
     check_interval=20,
     presence_ttl=60,
     close_timeout=1,
@@ -40,11 +40,11 @@ class Channel:
     """A connection whose device's frames the test gives, one at a time."""
 
     def __init__(self) -> None:
-        self.frames: asyncio.Queue[str | bytes | None] = asyncio.Queue()
+        self.frames: asyncio.Queue[str | bytes | Closed] = asyncio.Queue()
         self.sent: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
         self.closed: int | None = None
 
-    async def receive(self) -> str | bytes | None:
+    async def receive(self) -> str | bytes | Closed:
         return await self.frames.get()
 
     async def send(self, text: str) -> None:
@@ -55,8 +55,12 @@ class Channel:
         if self.closed is None:
             self.closed = code
 
-    def say(self, message: dict[str, Any] | str) -> None:
-        self.frames.put_nowait(message if isinstance(message, str) else json.dumps(message))
+    def say(self, message: dict[str, Any] | str | bytes) -> None:
+        self.frames.put_nowait(message if isinstance(message, str | bytes) else json.dumps(message))
+
+    def gone(self, code: int | None = None) -> None:
+        """The connection closes, with ``code`` if its close frame said one."""
+        self.frames.put_nowait(Closed(code))
 
     async def hear(self) -> dict[str, Any]:
         async with asyncio.timeout(5):
@@ -158,7 +162,7 @@ async def test_device_changed_changes_what_the_session_knows_of_the_device() -> 
             await asyncio.sleep(0.01)
     assert session.hello.languages == ("en", "vi")
     assert session.hello.time_zone == "Europe/Paris"
-    channel.frames.put_nowait(None)
+    channel.gone()
     await serving
 
 
@@ -184,7 +188,7 @@ async def test_drops_are_told_once_each_time_the_backlog_overflows() -> None:
         ("rate_limited", 7),
         ("invalid_message", 6),
     ]
-    channel.frames.put_nowait(None)
+    channel.gone()
     await serving
 
 
@@ -221,7 +225,7 @@ async def test_a_session_that_has_not_said_hello_is_not_taken_for_replaced() -> 
     await replica._check(replica._held())
     channel.say(hello())
     assert (await channel.hear())["type"] == "hello"
-    channel.frames.put_nowait(None)
+    channel.gone()
     await serving
 
 
@@ -232,7 +236,7 @@ async def test_a_check_forgets_again_the_presence_of_a_connection_that_closed_me
     serving = await started(replica, held(store), channel)
     [session] = replica._held()
     # The connection closes while a check, which took it, keeps its presence.
-    channel.frames.put_nowait(None)
+    channel.gone()
     await serving
     assert session.left
     presence.newest[session.device_id] = session.connection  # noted again by the check
@@ -252,7 +256,7 @@ async def test_messages_are_handled_at_the_rate_the_cloud_takes() -> None:
         assert (await channel.hear())["code"] == "invalid_message"
     # One at once, then one each fifth of a second.
     assert asyncio.get_running_loop().time() - started_at >= 0.35
-    channel.frames.put_nowait(None)
+    channel.gone()
     await serving
 
 
@@ -299,24 +303,143 @@ async def test_pings_count_against_the_rate() -> None:
     for _ in range(3):
         assert (await channel.hear())["type"] == "pong"
     assert asyncio.get_running_loop().time() - started_at >= 0.35
-    channel.frames.put_nowait(None)
+    channel.gone()
     await serving
+
+
+def closed_as(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """How each session that the test served ended, as the cloud logs it."""
+    return [
+        each.ended  # type: ignore[attr-defined]
+        for each in caplog.records
+        if each.getMessage() == "a device's control channel closed"
+    ]
+
+
+async def ends_unanswered(channel: Channel, serving: asyncio.Task[None]) -> str:
+    """Wait for the session to end over a frame that it cannot answer; what its bye says."""
+    bye = await channel.hear()
+    assert (bye["type"], bye["reason"]) == ("bye", "invalid_message")
+    await serving
+    assert channel.closed == 1000
+    return bye["message"]
+
+
+def device_twice(first: str) -> str:
+    """A hello whose ``device`` comes twice: ``first``, then one that passes. Python's reader
+    keeps the last, and would drop the first unread."""
+    return json.dumps(hello()).replace('"device": ', f'"device": {first}, "device": ', 1)
+
+
+# Frames that a session cannot answer, whenever they come: each ends it (Messages, Validation).
+NOT_HELD = "not JSON that every side can hold: "
+DEEPER = NOT_HELD + "its arrays and objects nest deeper than the cloud reads"
+UNHELD = NOT_HELD + "it holds U+0000 or a lone surrogate, which no side holds"
+REPEATED = NOT_HELD + "an object repeats a name"
+NO_TYPE = "no type that is text"
+NO_NUMBER = "a numbered type without its number"
+UNANSWERABLE = [
+    pytest.param(b'{"type": "ping", "received": 0}', "a binary frame", id="binary"),
+    pytest.param("not JSON", NOT_HELD + "it is not JSON", id="no JSON"),
+    pytest.param(DEEP, DEEPER, id="nested past Python's reader"),
+    pytest.param("[" * 65 + "]" * 65, DEEPER, id="nested past the protocols' depth"),
+    pytest.param('{"type": "ping", "received": 0, "received": 1}', REPEATED, id="a repeated name"),
+    pytest.param(
+        '{"type": "ping", "received": 0, "x": 1e400}',
+        NOT_HELD + "a number is past a double's range",
+        id="a number past a double",
+    ),
+    pytest.param(
+        '{"type": "ping", "received": 0, "x": NaN}',
+        NOT_HELD + "a number is not finite",
+        id="NaN",
+    ),
+    pytest.param(json.dumps({"type": "ping", "received": 0, "x": chr(0)}), UNHELD, id="U+0000"),
+    pytest.param(
+        json.dumps({"type": "ping", "received": 0, chr(0xD800): 1}),
+        UNHELD,
+        id="a lone surrogate in a name",
+    ),
+    pytest.param('[{"type": "ping", "received": 0}]', "not a JSON object", id="no object"),
+    pytest.param('{"received": 0}', NO_TYPE, id="no type"),
+    pytest.param('{"type": ["ping"], "received": 0}', NO_TYPE, id="a type that is no text"),
+    pytest.param('{"type": null, "seq": 1}', NO_TYPE, id="a type that is null"),
+    pytest.param('{"type": "device.changed", "languages": ["en"]}', NO_NUMBER, id="no number"),
+    pytest.param(
+        '{"type": "device.changed", "seq": "1", "languages": ["en"]}',
+        NO_NUMBER,
+        id="a number in text",
+    ),
+    pytest.param(
+        '{"type": "device.changed", "seq": true, "languages": ["en"]}',
+        NO_NUMBER,
+        id="a number that is true",
+    ),
+    pytest.param(
+        '{"type": "device.changed", "seq": 0, "languages": ["en"]}', NO_NUMBER, id="the number 0"
+    ),
+    pytest.param(
+        '{"type": "device.changed", "seq": 1.5, "languages": ["en"]}',
+        NO_NUMBER,
+        id="a number with a fraction",
+    ),
+    pytest.param(
+        '{"type": "device.changed", "seq": 9007199254740992, "languages": ["en"]}',
+        NO_NUMBER,
+        id="a number past the largest",
+    ),
+    # Which rule fails, and where: the schema's words, which name no value.
+    pytest.param('{"type": "ping"}', "ping: ", id="a ping that fails"),
+    pytest.param('{"type": "pong", "seq": 0}', "pong: ", id="a pong that fails"),
+    pytest.param('{"type": "reconnect", "seq": "1"}', "reconnect: ", id="a reconnect that fails"),
+]
+
+
+@pytest.mark.parametrize(
+    ("first", "said"),
+    [
+        *UNANSWERABLE,
+        pytest.param(json.dumps(hello(languages=[])), "hello: ", id="a hello that fails"),
+        pytest.param(json.dumps(hello(protocol="3")), "hello: ", id="a hello without its minor"),
+        # Items that jsonschema's uniqueItems would compare as deep as they nest.
+        pytest.param(
+            json.dumps(hello(languages=[json.loads("[" * 400 + "]" * 400)] * 2)),
+            DEEPER,
+            id="nested items to compare",
+        ),
+        pytest.param(
+            device_twice('{"kind": "robot", "model": "m", "software": "\\u0000"}'),
+            REPEATED,
+            id="U+0000 in a device repeated",
+        ),
+        pytest.param(device_twice("[" * 200 + "]" * 200), DEEPER, id="nested in a device repeated"),
+    ],
+)
+async def test_a_first_frame_the_cloud_cannot_answer_ends_the_session(
+    first: str | bytes, said: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    store = Store()
+    channel = Channel()
+    serving = asyncio.create_task(links(store).serve(channel, held(store)))  # type: ignore[arg-type]
+    channel.say(first)
+    why = await ends_unanswered(channel, serving)
+    assert why.startswith(said)
+    assert len(why) <= 256
+    assert closed_as(caplog) == ["invalid_message"]
 
 
 @pytest.mark.parametrize(
     "first",
     [
-        pytest.param(DEEP, id="nested too deep"),
-        pytest.param("[" * 1000 + "]" * 1000, id="nested past the configured depth"),
-        pytest.param(json.dumps(hello())[:-1] + ', "x": 1e400}', id="a number past a double"),
-        # Items that jsonschema's uniqueItems would compare as deep as they nest.
-        pytest.param(
-            json.dumps(hello(languages=[json.loads("[" * 400 + "]" * 400)] * 2)),
-            id="nested items to compare",
-        ),
+        {"type": "ping", "received": 0},
+        {"type": "pong"},
+        {"type": "device.changed", "seq": 1, "languages": ["en"]},
+        # Numbered, it is answerable: but the hello has not come.
+        {"type": "device.changed", "seq": 1},
+        {"type": "something.new", "seq": 1},
     ],
 )
-async def test_a_first_message_the_cloud_cannot_read_is_no_hello(first: str) -> None:
+async def test_a_first_message_that_is_no_hello_is_told(first: dict[str, Any]) -> None:
     store = Store()
     channel = Channel()
     serving = asyncio.create_task(links(store).serve(channel, held(store)))  # type: ignore[arg-type]
@@ -326,60 +449,100 @@ async def test_a_first_message_the_cloud_cannot_read_is_no_hello(first: str) -> 
     assert channel.closed == 1000
 
 
-@pytest.mark.parametrize("kind", [[], {}, ["ping"], 1, None])
-async def test_a_message_whose_type_is_no_text_gets_an_error(kind: Any) -> None:
+async def test_a_hello_that_holds_u0000_is_told_why(caplog: pytest.LogCaptureFixture) -> None:
+    """No side holds U+0000, nor does PostgreSQL's text: the session ends before the cloud
+    keeps anything of it, and its bye says why, naming no value (SEC-5)."""
+    store = Store()
+    described: list[None] = []
+    store.describing = lambda: described.append(None)
+    channel = Channel()
+    serving = asyncio.create_task(links(store).serve(channel, held(store)))  # type: ignore[arg-type]
+    software = "0.4.0" + chr(0) + "secret"
+    channel.say(hello(device={"kind": "robot", "model": "concept-v0", "software": software}))
+    assert await ends_unanswered(channel, serving) == UNHELD
+    assert described == []
+    assert closed_as(caplog) == ["invalid_message"]
+    assert "secret" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("frame", "said"),
+    [*UNANSWERABLE, pytest.param('{"type": "hello"}', "hello: ", id="a hello that fails")],
+)
+async def test_a_frame_the_cloud_cannot_answer_ends_the_session(
+    frame: str | bytes, said: str, caplog: pytest.LogCaptureFixture
+) -> None:
     store = Store()
     replica = links(store)
     channel = Channel()
     serving = await started(replica, held(store), channel)
-    channel.say({"type": kind, "seq": 1})
-    error = await channel.hear()
-    assert (error["reply_to"], error["code"]) == (1, "invalid_message")
-    # The session goes on (REL-4).
-    channel.say({"type": "ping", "received": 1})
-    assert await channel.hear() == {"type": "pong", "received": 1}
-    channel.frames.put_nowait(None)
-    await serving
+    channel.say(frame)
+    why = await ends_unanswered(channel, serving)
+    assert why.startswith(said)
+    assert len(why) <= 256
+    assert closed_as(caplog) == ["invalid_message"]
 
 
-async def test_a_message_nests_as_deep_as_the_configuration_says() -> None:
-    """A hello has an array in an object: two levels."""
-    store = Store()
-    channel = Channel()
-    serving = asyncio.create_task(
-        links(store, max_json_depth=1).serve(channel, held(store))  # type: ignore[arg-type]
-    )
-    channel.say(hello())
-    assert await channel.hear() == {"type": "bye", "reason": "no_hello"}
-    await serving
-    replica = links(store, max_json_depth=2)
-    channel = Channel()
-    serving = await started(replica, held(store), channel)
-    channel.say({"type": "device.changed", "seq": 1, "languages": [["x"]]})
-    channel.say({"type": "ping", "received": 1})
-    # The first is deeper than two levels: ignored, not answered.
-    assert await channel.hear() == {"type": "pong", "received": 0}
-    channel.frames.put_nowait(None)
-    await serving
-
-
-async def test_what_the_cloud_cannot_read_in_a_session_is_ignored() -> None:
+async def test_a_numbered_message_that_fails_gets_an_error(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """It has a number to answer, and the session goes on (REL-4)."""
     store = Store()
     replica = links(store)
     channel = Channel()
     serving = await started(replica, held(store), channel)
-    channel.say(DEEP)
-    channel.say("[" * 1000 + "]" * 1000)
-    channel.say('{"type": "device.changed", "seq": 1, "languages": 1e400}')
     channel.say(
         {"type": "device.changed", "seq": 1, "languages": [json.loads("[" * 60 + "]" * 60)] * 2}
     )
     error = await channel.hear()
     assert (error["reply_to"], error["code"]) == (1, "invalid_message")
-    channel.say({"type": "ping", "received": 1})
-    assert await channel.hear() == {"type": "pong", "received": 1}
-    channel.frames.put_nowait(None)
+    # A type longer than the protocol allows fails before the cloud would log it.
+    channel.say({"type": "x" * 65, "seq": 2})
+    error = await channel.hear()
+    assert (error["reply_to"], error["code"]) == (2, "invalid_message")
+    channel.say({"type": "ping", "received": 2})
+    assert await channel.hear() == {"type": "pong", "received": 2}
+    assert not [each for each in caplog.records if each.getMessage().startswith("a device sent")]
+    channel.gone()
     await serving
+
+
+async def test_a_number_whose_fraction_is_zero_is_the_integer() -> None:
+    """JSON Schema's integer is a number without a fraction, however it is written."""
+    store = Store()
+    replica = links(store)
+    channel = Channel()
+    serving = await started(replica, held(store), channel)
+    channel.say('{"type": "device.changed", "seq": 1.0, "languages": ["en"]}')
+    # The same number: a duplicate.
+    channel.say('{"type": "device.changed", "seq": 1, "languages": ["en"]}')
+    channel.say('{"type": "device.changed", "seq": 2e0}')
+    error = await channel.hear()
+    assert (error["reply_to"], error["code"]) == (2, "invalid_message")
+    channel.say({"type": "ping", "received": 0})
+    assert await channel.hear() == {"type": "pong", "received": 2}
+    channel.gone()
+    await serving
+
+
+def changed(seq: int, depth: int) -> str:
+    """A device.changed that nests ``depth`` deep, its own object included."""
+    languages = "[" * (depth - 1) + '"en"' + "]" * (depth - 1)
+    return f'{{"type": "device.changed", "seq": {seq}, "languages": {languages}}}'
+
+
+async def test_a_message_nests_as_deep_as_the_protocols_say() -> None:
+    """64 levels, counting the message's own object (ai-platform's ADR-0014, decision 3)."""
+    store = Store()
+    channel = Channel()
+    serving = await started(links(store), held(store), channel)
+    channel.say(changed(1, 2))
+    channel.say(changed(2, 64))
+    # Read, and failing the schema: numbered, so answered.
+    error = await channel.hear()
+    assert (error["reply_to"], error["code"]) == (2, "invalid_message")
+    channel.say(changed(3, 65))
+    assert await ends_unanswered(channel, serving) == DEEPER
 
 
 async def test_what_a_session_ignores_is_logged_a_bounded_number_of_times(
@@ -393,20 +556,43 @@ async def test_what_a_session_ignores_is_logged_a_bounded_number_of_times(
     # Each a type the cloud does not take, valid as a newer minor version's would be.
     for seq in range(1, 51):
         channel.say({"type": f"something.new{seq}", "seq": seq})
+    # What the cloud sends, and a hello that came already.
     for seq in range(51, 101):
-        channel.say("not JSON " + str(seq))
         channel.say({"type": "pong", "received": seq})
-        channel.say({"type": "device.changed"})
+        channel.say({"type": "reconnect"})
+        channel.say(hello())
     channel.say({"type": "device.changed", "seq": 51})
     assert (await channel.hear())["reply_to"] == 51  # after all the others
     noted = [each for each in caplog.records if each.getMessage().startswith("a device sent")]
-    # Once each: the first type the cloud does not take, what it cannot read, a pong, and
-    # a message without a number.
+    # Once each: the first type the cloud does not take, a pong, a reconnect and a hello.
     assert len(noted) == 4
     assert [each.type for each in noted if hasattr(each, "type")] == ["something.new1"]
     assert len(session._noted) == 4
-    channel.frames.put_nowait(None)
+    channel.gone()
     await serving
+
+
+@pytest.mark.parametrize(
+    ("code", "ended"), [(None, "closed"), (1000, "closed"), (1001, "closed"), (1009, "too_big")]
+)
+@pytest.mark.parametrize("hello_first", [False, True], ids=["before the hello", "in the session"])
+async def test_a_session_ends_as_its_connection_closed(
+    code: int | None, ended: str, hello_first: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A message too large closes the connection with 1009, whichever side received it: the
+    session ends, as it would with invalid_message, though no bye can follow (Messages,
+    Sizes)."""
+    store = Store()
+    replica = links(store)
+    channel = Channel()
+    if hello_first:
+        serving = await started(replica, held(store), channel)
+    else:
+        serving = asyncio.create_task(replica.serve(channel, held(store)))  # type: ignore[arg-type]
+    channel.gone(code)
+    await serving
+    assert channel.sent.empty()
+    assert closed_as(caplog) == [ended]
 
 
 class Failing(Channel):
@@ -417,7 +603,7 @@ class Failing(Channel):
         super().__init__()
         self.good = good
 
-    async def receive(self) -> str | bytes | None:
+    async def receive(self) -> str | bytes | Closed:
         if self.good == 0:
             raise RuntimeError("for the test")
         self.good -= 1
@@ -571,7 +757,7 @@ async def test_a_replica_that_stops_waits_for_its_sessions_no_longer_than_close_
     running = asyncio.create_task(replica.run(stop))
     channel = Channel()
     serving = await started(replica, held(store), channel)
-    channel.frames.put_nowait(None)
+    channel.gone()
     await presence.leaving.wait()
     stop.set()
     async with asyncio.timeout(1):
