@@ -138,7 +138,7 @@ async def test_the_hellos_open_a_session(cloud) -> None:
     async with served(cloud) as url:
         async with linked(url, await token(cloud, device)) as link:
             answer = await link.open(protocol="3.7")
-            assert answer["protocol"] == "3.1"  # the lower of the two minors
+            assert answer["protocol"] == "3.2"  # the lower of the two minors
             assert answer["resumed"] is False
             assert uuid.UUID(answer["session"]).version == 7
             assert answer["ping_interval"] == cloud.settings.devices.link.ping_interval
@@ -456,6 +456,28 @@ async def test_a_removed_device_is_told_wherever_it_is_connected(make_cloud) -> 
         assert await link.hear() == {"type": "bye", "reason": "revoked"}
         assert await link.ended() == 1000
     assert await first.redis("EXISTS", f"{PRESENCE_PREFIX}{device.id}") == 0
+
+
+async def test_a_device_that_leaves_its_home_is_removed_then_told(cloud) -> None:
+    """As removing it in the app does (leave, since 3.2)."""
+    tokens, home, device = await registered(cloud)
+    devices = f"/app/v1/homes/{home['id']}/devices"
+    access_token = await token(cloud, device)
+    async with served(cloud) as url:
+        async with linked(url, access_token) as link:
+            assert (await link.open())["protocol"] == "3.2"
+            await link.say({"type": "leave", "seq": 1})
+            assert await link.hear() == {"type": "bye", "reason": "left"}
+            assert await link.ended() == 1000
+        # The app no longer lists it, and its tokens and its assertions are refused.
+        listed = await cloud.http.get(devices, headers=bearer(tokens))
+        assert listed.json()["devices"] == []
+        read = await cloud.http.get(f"{devices}/{device.id}", headers=bearer(tokens))
+        assert read.status_code == 404
+        assert (await refused(url, access_token)).status == 401
+        asked = await cloud.device_token(device.assertion(cloud.token_endpoint))
+        assert (asked.status_code, asked.json()["error"]) == (401, "invalid_client")
+    assert await cloud.redis("EXISTS", f"{PRESENCE_PREFIX}{device.id}") == 0
 
 
 async def test_a_deleted_home_s_devices_are_told(cloud) -> None:

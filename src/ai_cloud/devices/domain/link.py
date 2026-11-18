@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The control channel's session, as the cloud link 3.1 has it, without I/O
+"""The control channel's session, as the cloud link 3.2 has it, without I/O
 (platform/protocols/cloud/README.md: The control channel, Staying connected, Resuming a
 session, Messages, The session, Errors).
 
@@ -25,7 +25,8 @@ from ai_cloud.shared.protocols import Schema, Unreadable, read_json
 # Fixed by the cloud link (platform/protocols/cloud/README.md).
 PROTOCOL = "cloud"  # its schema, platform/protocols/cloud/schema.json
 PATH = "/device/v3/link"  # The cloud's address: the path carries the major version
-MAJOR, MINOR = 3, 1  # the version the cloud speaks
+MAJOR, MINOR = 3, 2  # the version the cloud speaks
+LEAVE_MINOR = 2  # leave: "in a session of 3.2 or later only"
 MAX_MESSAGE = 1 << 20  # Messages, Sizes: "A message holds up to 1 MiB of UTF-8"
 UNNUMBERED = frozenset({"hello", "ping", "pong", "reconnect", "bye"})  # Resuming, Numbers
 LARGEST_SEQ = 2**53 - 1  # $defs/seq: what a JSON number holds exactly
@@ -55,6 +56,8 @@ class Bye(StrEnum):
     # The cloud's own failure, as a side takes a reason it does not know (Messages, Unknown
     # content).
     ERROR = "error"
+    # The device left its home, as its leave asked (leave). Since 3.2.
+    LEFT = "left"
 
 
 class Code(StrEnum):
@@ -135,6 +138,11 @@ class DeviceHello:
     allowed_classes: tuple[str, ...]
     # The conversation it is in, if it is in one.
     conversation: UUID | None
+
+    @property
+    def session_minor(self) -> int:
+        """The minor version of its session: the lower of its own and the cloud's."""
+        return min(MINOR, self.minor)
 
     def changed(self, message: dict[str, Any]) -> DeviceHello:
         """The hello as a valid ``device.changed`` changes it."""
@@ -233,8 +241,7 @@ def cloud_hello(
     no conversations yet, and subscribes to no event."""
     return {
         "type": "hello",
-        # The major, and the lower of the two minors.
-        "protocol": f"{MAJOR}.{min(MINOR, hello.minor)}",
+        "protocol": f"{MAJOR}.{hello.session_minor}",
         "session": str(session),
         "resumed": False,
         "time": instant(now),

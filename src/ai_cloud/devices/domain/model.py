@@ -120,9 +120,11 @@ class TokenHolder:
 
 @dataclass(frozen=True)
 class Opening:
-    """A connection the registry lets open: the device, and the registration it is under."""
+    """A connection the registry lets open: the device, and the registration it is under, in
+    its home."""
 
     device_id: UUID
+    home_id: UUID
     registered: datetime
 
 

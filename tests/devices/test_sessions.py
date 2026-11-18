@@ -6,7 +6,7 @@ session starts, happens here when a test says (docs/decisions/0011-control-chann
 import asyncio
 import json
 import uuid
-from collections.abc import AsyncIterator, Callable, Collection, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import Any
@@ -17,13 +17,15 @@ from link import DEEP, hello
 
 from ai_cloud.devices.domain.errors import Unavailable
 from ai_cloud.devices.domain.link import Closed
-from ai_cloud.devices.domain.model import Description, Opening, TokenHolder
+from ai_cloud.devices.domain.model import Description, Device, Opening, TokenHolder
 from ai_cloud.devices.service.links import RECONNECT, Links
 from ai_cloud.devices.settings import LinkSettings
+from ai_cloud.shared.protocols import platform_dir
 
 pytestmark = pytest.mark.anyio
 
 REGISTERED = datetime(2026, 11, 11, tzinfo=UTC)
+HOME = uuid.uuid7()
 SETTINGS = LinkSettings(
     hello_timeout=5,
     ping_interval=20,
@@ -67,13 +69,20 @@ class Channel:
             return await self.sent.get()
 
 
+async def nothing() -> None:
+    pass
+
+
 class Store:
-    """The registry: the devices it holds, under their registration. ``describing`` runs while
-    a hello is kept, as a change elsewhere would."""
+    """The registry: the devices it holds, under their registration, in ``HOME``. As a change
+    elsewhere would, ``describing`` runs while a hello is kept, and ``removing`` as a device
+    is removed, before the registry holds it no more."""
 
     def __init__(self) -> None:
         self.held: dict[UUID, datetime] = {}
         self.describing: Callable[[], None] = lambda: None
+        self.removing: Callable[[], Awaitable[None]] = nothing
+        self.homes_held: list[UUID] = []
 
     @asynccontextmanager
     async def transaction(self) -> AsyncIterator[Store]:
@@ -85,6 +94,18 @@ class Store:
 
     async def registrations(self, device_ids: Collection[UUID]) -> dict[UUID, datetime]:
         return {each: self.held[each] for each in device_ids if each in self.held}
+
+    async def hold_home(self, home_id: UUID) -> None:
+        self.homes_held.append(home_id)
+
+    async def device(self, device_id: UUID) -> Device | None:
+        if device_id not in self.held:
+            return None
+        return Device(device_id, HOME, self.held[device_id], None, None, 1)
+
+    async def remove_device(self, home_id: UUID, device_id: UUID) -> bool:
+        await self.removing()
+        return home_id == HOME and self.held.pop(device_id, None) is not None
 
 
 class Presence:
@@ -110,15 +131,22 @@ class Presence:
 
 
 class Hints:
+    """``publishing`` runs as a hint is sent: as this replica would hear it, for one."""
+
+    def __init__(self) -> None:
+        self.publishing: Callable[[], Awaitable[None]] = nothing
+
     async def publish(self, device_ids: Collection[UUID]) -> None:
-        pass
+        await self.publishing()
 
     async def listen(self) -> AsyncIterator[UUID]:
         await asyncio.Event().wait()
         yield uuid.uuid7()
 
 
-def links(store: Store, presence: Presence | None = None, **changes: Any) -> Links:
+def links(
+    store: Store, presence: Presence | None = None, hints: Hints | None = None, **changes: Any
+) -> Links:
     settings = SETTINGS.model_copy(update=changes)
     return Links(
         settings=settings,
@@ -126,14 +154,14 @@ def links(store: Store, presence: Presence | None = None, **changes: Any) -> Lin
         tokens=None,  # type: ignore[arg-type]  # no handshake here
         store=store,  # type: ignore[arg-type]
         presence=presence or Presence(),
-        hints=Hints(),  # type: ignore[arg-type]
+        hints=hints or Hints(),  # type: ignore[arg-type]
     )
 
 
 def held(store: Store) -> Opening:
     device_id = uuid.uuid7()
     store.held[device_id] = REGISTERED
-    return Opening(device_id, REGISTERED)
+    return Opening(device_id, HOME, REGISTERED)
 
 
 async def started(replica: Links, opening: Opening, channel: Channel) -> asyncio.Task[None]:
@@ -238,7 +266,7 @@ async def test_a_check_forgets_again_the_presence_of_a_connection_that_closed_me
     # The connection closes while a check, which took it, keeps its presence.
     channel.gone()
     await serving
-    assert session.left
+    assert session.finished
     presence.newest[session.device_id] = session.connection  # noted again by the check
     await replica._check([session])
     assert session.device_id not in presence.newest
@@ -593,6 +621,178 @@ async def test_a_session_ends_as_its_connection_closed(
     await serving
     assert channel.sent.empty()
     assert closed_as(caplog) == [ended]
+
+
+# Leaving the home (leave, since 3.2).
+
+
+async def test_the_leave_example_runs_as_it_says(caplog: pytest.LogCaptureFixture) -> None:
+    """The cloud link's example of a leave: the first removal fails, and the second answers
+    bye left, once the registry holds the device no more."""
+    example = json.loads(
+        (platform_dir() / "cloud" / "examples" / "leave.json").read_text(encoding="utf-8")
+    )
+    store = Store()
+    failures = iter([RuntimeError("for the test")])
+
+    async def removing() -> None:
+        if (failure := next(failures, None)) is not None:
+            raise failure
+
+    store.removing = removing
+    replica = links(store)
+    channel = Channel()
+    opening = held(store)
+    serving = asyncio.create_task(replica.serve(channel, opening))  # type: ignore[arg-type]
+    for step in example["messages"]:
+        if step.get("from") == "device":
+            channel.say(step["message"])
+        elif step.get("from") == "cloud":
+            said = await channel.hear()
+            if said["type"] == "hello":
+                # Its session and its time are the cloud's own.
+                said |= {key: step["message"][key] for key in ("session", "time")}
+            else:
+                # Only then: the registry holds the device no more.
+                assert (opening.device_id in store.held) is (said["type"] != "bye")
+            assert said == step["message"]
+    await serving
+    assert channel.closed == 1000
+    assert store.homes_held == [HOME, HOME]
+    assert closed_as(caplog) == ["left"]
+    left = [each for each in caplog.records if each.getMessage() == "a device left its home"]
+    assert [(each.home, each.device) for each in left] == [  # type: ignore[attr-defined]
+        (str(HOME), str(opening.device_id))
+    ]
+
+
+async def test_a_leave_ends_its_session_with_left_though_its_hint_comes_first() -> None:
+    """The removal's hint reaches this replica too, and its check finds the device gone,
+    before the leave ends the session."""
+    store, hints = Store(), Hints()
+    replica = links(store, hints=hints)
+    channel = Channel()
+    opening = held(store)
+    serving = await started(replica, opening, channel)
+    hinted: list[int] = []
+
+    async def heard() -> None:
+        await replica._check(replica._held())
+        hinted.append(1)
+
+    hints.publishing = heard
+    channel.say({"type": "leave", "seq": 1})
+    assert await channel.hear() == {"type": "bye", "reason": "left"}
+    await serving
+    assert hinted == [1]
+    assert opening.device_id not in store.held
+
+
+@pytest.mark.parametrize(
+    "meanwhile",
+    ["removed in the app", "registered again", "gone with its home"],
+)
+async def test_a_device_removed_meanwhile_is_told_revoked(meanwhile: str) -> None:
+    """A removal in the app, or the home's deletion, came before the leave's: the device is
+    out of its home all the same (leave), and a registration made since stays."""
+    store, hints = Store(), Hints()
+    replica = links(store, hints=hints)
+    channel = Channel()
+    opening = held(store)
+    serving = await started(replica, opening, channel)
+    hinted: list[int] = []
+
+    async def heard() -> None:
+        hinted.append(1)
+
+    hints.publishing = heard
+    if meanwhile == "removed in the app":
+        del store.held[opening.device_id]
+    elif meanwhile == "registered again":
+        store.held[opening.device_id] = datetime(2026, 11, 12, tzinfo=UTC)
+    else:
+
+        async def deleted() -> None:
+            del store.held[opening.device_id]
+
+        store.removing = deleted
+    channel.say({"type": "leave", "seq": 1})
+    assert await channel.hear() == {"type": "bye", "reason": "revoked"}
+    await serving
+    # Its removal was another's, and so was its hint.
+    assert hinted == []
+    if meanwhile == "registered again":
+        assert store.held[opening.device_id] == datetime(2026, 11, 12, tzinfo=UTC)
+
+
+async def test_a_leave_that_failed_leaves_the_session_to_its_checks() -> None:
+    store = Store()
+
+    async def failing() -> None:
+        raise RuntimeError("for the test")
+
+    store.removing = failing
+    replica = links(store)
+    channel = Channel()
+    opening = held(store)
+    serving = await started(replica, opening, channel)
+    channel.say({"type": "leave", "seq": 1})
+    error = await channel.hear()
+    assert (error["reply_to"], error["code"]) == (1, "internal")
+    # Removed in the app since: the next check ends the session.
+    del store.held[opening.device_id]
+    await replica._check(replica._held())
+    assert await channel.hear() == {"type": "bye", "reason": "revoked"}
+    await serving
+
+
+async def test_what_comes_after_a_leave_is_not_handled() -> None:
+    store = Store()
+    removing, removed = asyncio.Event(), asyncio.Event()
+
+    async def held_up() -> None:
+        removing.set()
+        await removed.wait()
+
+    store.removing = held_up
+    replica = links(store)
+    channel = Channel()
+    serving = await started(replica, held(store), channel)
+    channel.say({"type": "leave", "seq": 1})
+    async with asyncio.timeout(5):
+        await removing.wait()
+    # Taken while the removal runs: the pong says so.
+    channel.say({"type": "leave", "seq": 2})
+    channel.say({"type": "ping", "received": 0})
+    assert await channel.hear() == {"type": "pong", "received": 2}
+    removed.set()
+    assert await channel.hear() == {"type": "bye", "reason": "left"}
+    await serving
+    assert store.homes_held == [HOME]
+
+
+async def test_a_session_of_3_1_ignores_leave(caplog: pytest.LogCaptureFixture) -> None:
+    """A cloud of 3.1 ignores a type it does not know, and so does one of 3.2 in a session of
+    3.1 (Messages, Unknown content)."""
+    store = Store()
+    replica = links(store)
+    channel = Channel()
+    opening = held(store)
+    serving = asyncio.create_task(replica.serve(channel, opening))  # type: ignore[arg-type]
+    channel.say(hello(protocol="3.1"))
+    assert (await channel.hear())["protocol"] == "3.1"
+    channel.say({"type": "leave", "seq": 1})
+    channel.say({"type": "ping", "received": 0})
+    assert await channel.hear() == {"type": "pong", "received": 1}
+    channel.say({"type": "device.changed", "seq": 2})
+    # Answered after the leave was handled.
+    assert (await channel.hear())["reply_to"] == 2
+    assert store.held[opening.device_id] == REGISTERED
+    assert store.homes_held == []
+    noted = [each for each in caplog.records if each.getMessage().startswith("a device sent")]
+    assert [each.type for each in noted] == ["leave"]  # type: ignore[attr-defined]
+    channel.gone()
+    await serving
 
 
 class Failing(Channel):

@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """The devices' control channels: each connection's session, from the device's hello to its
-end, and what a replica of the api does for the sessions it holds (the cloud link 3.1,
+end, and what a replica of the api does for the sessions it holds (the cloud link 3.2,
 platform/protocols/cloud/README.md; docs/decisions/0011-control-channels.md).
 
 A connection opens once the device's access token verifies and the registry holds the
@@ -13,6 +13,10 @@ Whatever may end a session elsewhere, the device's removal, its home's deletion 
 connection, sends a hint that reaches every replica, at most once. A replica checks the
 connections it holds of that device against the registry and the presence, and does so for
 all of them every ``check_interval``: so a lost hint delays a ``bye``, and never loses one.
+
+A device leaves its home before its factory reset, in a session of 3.2: the cloud removes it
+as removing it in the app does, then ends the session with ``bye`` ``left`` (leave; ai-platform
+ADR-0015). The hint that the removal sends ends the device's other connections, not this one.
 """
 
 import asyncio
@@ -100,7 +104,7 @@ class Links:
             raise Unauthenticated("the token is older than the device's registration")
         if self._stopping:
             raise Unavailable("this replica is going away")
-        return Opening(device.id, device.create_time)
+        return Opening(device.id, device.home_id, device.create_time)
 
     async def serve(self, channel: Channel, opening: Opening) -> None:
         """Hold the session of a connection that ``open`` let open, until it ends. One that
@@ -116,10 +120,10 @@ class Links:
         try:
             ended = await session.run()
         finally:
-            session.left = True
+            session.finished = True
             try:
                 if session.established:
-                    await self._leave(session)
+                    await self._forget(session)
             finally:
                 held.discard(session)
                 if not held and self._sessions.get(opening.device_id) is held:
@@ -144,6 +148,28 @@ class Links:
         if replaced is not None:
             await hint(self._hints, [session.device_id])
         return True
+
+    async def remove(self, session: Session) -> bool:
+        """Remove the device of ``session`` from its home, as removing it in the app does, if
+        the registry still holds it under the registration the session opened with; whether
+        it did. The cloud forgets its key, and the device's other connections hear of it."""
+        async with self._store.transaction() as store:
+            # The home first, then the device's first answers and the device itself, as the
+            # app's removal and a home's deletion take them.
+            await store.hold_home(session.home_id)
+            device = await store.device(session.device_id)
+            if device is None or device.create_time != session.registered:
+                # Removed meanwhile, and maybe registered again: no longer this session's.
+                return False
+            # False if its home's deletion, which does not hold the home, came first.
+            removed = await store.remove_device(session.home_id, session.device_id)
+        if removed:
+            log.info(
+                "a device left its home",
+                extra={"home": str(session.home_id), "device": str(session.device_id)},
+            )
+            await hint(self._hints, [session.device_id])
+        return removed
 
     async def run(self, stop: asyncio.Event) -> None:
         """Hear the hints, and check the connections held here every ``check_interval``,
@@ -213,7 +239,9 @@ class Links:
         standing: list[Session] = []
         for session in sessions:
             if registered.get(session.device_id) != session.registered:
-                session.end(Bye.REVOKED)
+                # One whose leave removes its device ends as the leave says, after it.
+                if not session.leaving:
+                    session.end(Bye.REVOKED)
             elif session.established:
                 standing.append(session)
         replaced = await self._presence.keep(
@@ -222,11 +250,11 @@ class Links:
         for session in standing:
             if (session.device_id, session.connection) in replaced:
                 session.end(Bye.REPLACED)
-            elif session.left:
+            elif session.finished:
                 # It closed while its presence was kept, which may have noted it again.
-                await self._leave(session)
+                await self._forget(session)
 
-    async def _leave(self, session: Session) -> None:
+    async def _forget(self, session: Session) -> None:
         try:
             await self._presence.leave(session.device_id, session.connection)
         except Exception:
@@ -267,13 +295,17 @@ class Session:
         self._settings = links.settings
         self._channel = channel
         self.device_id = opening.device_id
+        self.home_id = opening.home_id
         self.registered = opening.registered
         # This connection, as the presence names it: a session may outlive it.
         self.connection = uuid.uuid7()
         self.id: UUID | None = None
         self.hello: DeviceHello | None = None
         self.established = False
-        self.left = False
+        # Set once the session is over, its connection closed.
+        self.finished = False
+        # Set while the device's leave removes it: the session then ends as the leave says.
+        self.leaving = False
         # Why the cloud ends the session, once it does: its bye's reason, or reconnect; and
         # what its bye says of it, if anything.
         self.ending: str | None = None
@@ -483,12 +515,13 @@ class Session:
                 return ended
 
     async def _handle_all(self) -> None:
-        while True:
+        # What waits once the session ends is not handled: after a leave, for one.
+        while self.ending is None:
             seq, message = await self._inbox.get()
             if self._inbox.empty():
                 self._dropping = False
             try:
-                self._handle(seq, message)
+                await self._handle(seq, message)
             except Exception:
                 log.exception("a device's message could not be handled", extra=self.about())
                 self._error(seq, Code.INTERNAL, "the cloud failed to handle the message")
@@ -546,7 +579,7 @@ class Session:
 
     # Handling.
 
-    def _handle(self, seq: int, message: dict[str, Any]) -> None:
+    async def _handle(self, seq: int, message: dict[str, Any]) -> None:
         problem = self._links.schema.problem(message)
         if problem is not None:
             self._error(seq, Code.INVALID_MESSAGE, problem)
@@ -556,14 +589,40 @@ class Session:
             self.hello = self.hello.changed(message)
         elif kind == "conversation.request":
             self._error(seq, Code.UNAVAILABLE, "the cloud holds no conversations")
+        elif (
+            kind == "leave"
+            and self.hello is not None
+            and self.hello.session_minor >= link.LEAVE_MINOR
+        ):
+            await self._leave(seq)
         else:
             # Calls and events come with the modules that make and take them; a conversation
             # the cloud does not hold ended as its end crossed; and a type the cloud does not
-            # know comes from a newer minor version (Messages, Unknown content). The first
-            # type is logged: the device chooses how many come.
+            # know comes from a newer minor version (Messages, Unknown content), as leave
+            # does in a session of 3.1. The first type is logged: the device chooses how many
+            # come.
             self._note(
                 "type", "a device sent messages of a type the cloud does not take", type=kind
             )
+
+    async def _leave(self, seq: int) -> None:
+        """Remove the device from its home, as its leave ``seq`` asks, then end the session
+        with ``bye`` ``left``; with ``bye`` ``revoked`` if a removal in the app came first. A
+        removal that fails is answered with ``error`` ``internal``, and the session goes on:
+        the device may ask again (leave). The cloud holds no conversations, so none of the
+        device's is left to end."""
+        self.leaving = True
+        try:
+            left = await self._links.remove(self)
+        except Exception:
+            self.leaving = False
+            log.exception(
+                "a device could not leave its home",
+                extra={"device": str(self.device_id), **self.about()},
+            )
+            self._error(seq, Code.INTERNAL, "the device could not be removed")
+            return
+        self.end(Bye.LEFT if left else Bye.REVOKED)
 
     # Sending.
 
