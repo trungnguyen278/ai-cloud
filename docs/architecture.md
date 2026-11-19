@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys and their names, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads (the app API 1.6, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.1, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys and their names, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads, and removes a device that leaves its home before its factory reset (the app API 1.6, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.2, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -26,7 +26,7 @@ The cloud is the AI of every device in the project, and runs what a fleet of dev
                  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Devices keep a control channel to `api` at all times, a WebSocket, and join a LiveKit room only to talk, one for each conversation (the cloud link 3.1, [ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)):
+Devices keep a control channel to `api` at all times, a WebSocket, and join a LiveKit room only to talk, one for each conversation (the cloud link 3.2, [ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)):
 - every call to a device goes through `devices`, on its control channel, whoever makes it: the agent, a reminder, the app;
 - a conversation's turns and answers go between the agent and the device, in the room, with the audio.
 
@@ -217,7 +217,7 @@ Luni Cloud was the preview. What it taught, and what changes:
 | Luni Cloud | Here |
 |---|---|
 | One AI service behind HTTP endpoints (`/chat`, `/stt`, `/tts`) | A streaming pipeline in a LiveKit Agents worker |
-| The robot on a WebSocket, with a device token and its MAC address | The cloud link 3.1: a WebSocket for the session, WebRTC only to talk; keys in a TPM, short-lived tokens |
+| The robot on a WebSocket, with a device token and its MAC address | The cloud link 3.2: a WebSocket for the session, WebRTC only to talk; keys in a TPM, short-lived tokens |
 | Memory in Redis Stack | PostgreSQL with pgvector; Redis only for what can be lost |
 | Free tiers, including unofficial endpoints, in fallback chains | Chains of official free tiers, metered and bounded |
 | Agent Brain v2: router, fillers, confirmations, barge-in, memory in tiers | Kept, in `conversation`'s domain |

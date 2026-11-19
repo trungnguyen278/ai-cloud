@@ -199,11 +199,12 @@ def _problem(error: errors.DevicesError) -> Problem:
 
 def _refused(error: errors.DevicesError) -> OAuthError:
     """How the token endpoint answers a device it refuses: ``invalid_client`` only for a key it
-    does not hold, after which the device offers set-up; ``invalid_grant`` for an assertion
-    of a key it holds that fails, as RFC 6749 answers a grant that is invalid (5.2), not
-    RFC 7523's ``invalid_client``, after which a clock far off would unbind a device. It
-    tries again after its backoff after any refusal but the first (the cloud link 3.1,
-    Tokens from the server)."""
+    does not hold, after which the device offers set-up, or erases itself if it was leaving
+    its home before a factory reset (leave); ``invalid_grant`` for an assertion of a key it
+    holds that fails, as RFC 6749 answers a grant that is invalid (5.2), not RFC 7523's
+    ``invalid_client``, after which a clock far off would unbind a device. It tries again
+    after its backoff after any refusal but the first (the cloud link 3.2, Tokens from the
+    server)."""
     match error:
         case errors.RateLimited():
             # Not logged: a flood would fill the logs.

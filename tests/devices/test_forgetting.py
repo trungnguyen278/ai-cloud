@@ -9,6 +9,7 @@ import asyncio
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
@@ -36,6 +37,7 @@ from ai_cloud.devices.domain.model import (
 from ai_cloud.devices.domain.model import Device as Held
 from ai_cloud.devices.ports import Transaction
 from ai_cloud.devices.service import DevicesService, Forgetting
+from ai_cloud.devices.service.links import Links
 from ai_cloud.entry.worker import WorkerSecrets, serve
 from ai_cloud.shared.app_api import IdempotencyKey
 from ai_cloud.shared.database import create_engine
@@ -528,6 +530,52 @@ async def test_a_removal_takes_a_device_s_answers_before_the_device(cloud, engin
                 text("SELECT 1 FROM devices.devices WHERE id = :device FOR UPDATE NOWAIT"), rows
             )
         await asyncio.wait_for(removing, 5)
+    finally:
+        await elsewhere.dispose()
+    assert await kept_for(cloud, "home_id", home["id"]) == NOTHING
+
+
+async def test_a_leave_takes_a_device_s_answers_before_the_device(cloud, engine) -> None:
+    """As the app's removal does (the cloud link's leave, since 3.2)."""
+    tokens = await cloud.sign_in()
+    home = await cloud.create_home(tokens)
+    device = Device()
+    await cloud.add_device(tokens, home, device)
+    async with PostgresStore(engine).transaction() as store:
+        held = await store.device(device.id)
+    assert held is not None
+    elsewhere = create_engine(cloud.database, cloud.settings.database, REMOVING)
+    links = Links(
+        settings=cloud.settings.devices.link,
+        leeway=0,
+        tokens=None,  # type: ignore[arg-type]  # no handshake here
+        store=PostgresStore(elsewhere),
+        presence=Absent(),  # type: ignore[arg-type]
+        hints=Unheard(),  # type: ignore[arg-type]
+    )
+    # What a session knows of its device's registration.
+    session = SimpleNamespace(
+        device_id=device.id, home_id=held.home_id, registered=held.create_time
+    )
+    rows = {"device": device.id}
+    try:
+        async with engine.begin() as forgetting:
+            # A home's forgetting holds the answer that shows the device...
+            await forgetting.execute(
+                text("SELECT 1 FROM devices.idempotency_keys WHERE device_id = :device FOR UPDATE"),
+                rows,
+            )
+            leaving = asyncio.create_task(links.remove(session))  # type: ignore[arg-type]
+
+            async def stalled() -> bool:
+                return await waiting(engine, REMOVING)
+
+            await until(stalled)
+            # ...then takes the device, which the leave, waiting, does not hold.
+            await forgetting.execute(
+                text("SELECT 1 FROM devices.devices WHERE id = :device FOR UPDATE NOWAIT"), rows
+            )
+        assert await asyncio.wait_for(leaving, 5) is True
     finally:
         await elsewhere.dispose()
     assert await kept_for(cloud, "home_id", home["id"]) == NOTHING
