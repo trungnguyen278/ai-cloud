@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
-"""Rate limits, kept in Redis (SEC-15): how often one subject, an address say, may act.
+"""Rate limits (SEC-15): how often one subject, an address say, may act, kept in Redis for
+every process; and token buckets, for what one process takes of one connection.
 
 The limit is the generic cell rate algorithm (GCRA), as the redis-cell module and many
 API gateways apply it. A subject may act ``limit`` times in a ``period``, spread out or
@@ -8,11 +9,14 @@ time its next action is due at the steady rate, which expires once it is past. R
 clock decides, so that every process agrees.
 """
 
+import asyncio
 import ipaddress
+import time
 from typing import Annotated, Protocol
 
 from pydantic import Field
 from redis.asyncio import Redis
+from redis.exceptions import RedisError
 
 from ai_cloud.shared.config import Settings
 
@@ -50,10 +54,14 @@ class AddressRateSettings(RateSettings):
     ipv6_prefix: Annotated[int, Field(ge=1, le=128)]
 
 
+class RatesUnavailable(Exception):
+    """What counts the rates cannot answer now, such as Redis while it is down."""
+
+
 class RateLimiter(Protocol):
     async def wait(self, subject: str) -> float:
         """0 if ``subject`` may act now, which counts; otherwise the seconds it must
-        wait, and nothing counts."""
+        wait, and nothing counts. ``RatesUnavailable`` if nothing can be counted now."""
         ...
 
 
@@ -67,8 +75,48 @@ class RedisRateLimiter:
         self._args = [f"{period:.3f}", f"{period / settings.limit:.3f}"]
 
     async def wait(self, subject: str) -> float:
-        waited = await self._script(keys=[self._prefix + subject], args=self._args)
+        try:
+            waited = await self._script(keys=[self._prefix + subject], args=self._args)
+        except RedisError as error:
+            raise RatesUnavailable("the rates cannot be counted now") from error
         return int(waited) / _MICROSECONDS
+
+
+class TokenBucket:
+    """A token bucket, in this process: ``rate`` tokens a second, in bursts of up to
+    ``burst``. What costs more than a burst waits for a full bucket, and what it lacks then
+    delays what follows."""
+
+    def __init__(self, rate: float, burst: int) -> None:
+        self.rate = rate
+        self.burst = burst
+        self._tokens = float(burst)
+        self._at = time.monotonic()
+
+    def take_now(self, cost: float = 1) -> float:
+        """0 once ``cost`` is taken, if the bucket holds it, or is full; otherwise the seconds
+        until it will, and nothing is taken."""
+        self._refill()
+        needed = min(cost, self.burst)
+        if self._tokens >= needed:
+            self._tokens -= cost
+            return 0
+        return (needed - self._tokens) / self.rate
+
+    async def take(self, cost: float = 1) -> None:
+        """Wait for ``cost``, then take it."""
+        while (wait := self.take_now(cost)) > 0:
+            await asyncio.sleep(wait)
+
+    def full(self) -> bool:
+        """Whether the bucket holds a whole burst again: what took from it left no trace."""
+        self._refill()
+        return self._tokens >= self.burst
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        self._tokens = min(self.burst, self._tokens + (now - self._at) * self.rate)
+        self._at = now
 
 
 def address_subject(address: str, ipv6_prefix: int) -> str:

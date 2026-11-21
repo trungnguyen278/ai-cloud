@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys and their names, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads, and removes a device that leaves its home before its factory reset (the app API 1.7, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.3, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys and their names, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads, and removes a device that leaves its home before its factory reset (the app API 1.7, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.4, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -26,7 +26,7 @@ The cloud is the AI of every device in the project, and runs what a fleet of dev
                  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Devices keep a control channel to `api` at all times, a WebSocket, and join a LiveKit room only to talk, one for each conversation (the cloud link 3.3, [ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)):
+Devices keep a control channel to `api` at all times, a WebSocket, and join a LiveKit room only to talk, one for each conversation (the cloud link 3.4, [ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)):
 - every call to a device goes through `devices`, on its control channel, whoever makes it: the agent, a reminder, the app;
 - a conversation's turns and answers go between the agent and the device, in the room, with the audio.
 
@@ -139,7 +139,7 @@ All are defined in ai-platform, which the cloud pins at `platform/`:
 - **Devices** prove themselves with keys in their TPMs, which buy short-lived tokens for their control channel (ai-robot ADR-0010). Each conversation's room has a token of its own. The cloud acts within the safety classes they enforce.
 - **People** sign in with Google or Apple, to accounts the cloud keeps, and get the cloud's own tokens: short-lived access tokens, and refresh tokens rotated on every use ([ai-platform ADR-0008](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0008-sign-in.md)). Every request is confined to the account's homes and their devices (SEC-6).
 - **Secrets** come from the environment or a secret store, and are never logged.
-- **Limits** on rates and sizes at the edge (SEC-15) also bound what an abuser can cost.
+- **Limits** on rates and sizes at the edge (SEC-15) also bound what an abuser can cost. What one device can take of a replica is bounded ([ADR-0012](decisions/0012-what-one-device-can-exhaust.md), proposed): the frames it sends below its messages; how often it opens its control channel, and how many connections a replica takes from all devices together, counted once a token verifies so that no host without one can refuse a device, each answered with when to try again; the messages it sends, and the length of their text, however often it connects; and its connection, cut once closed even if it reads nothing.
 - **What it reads.** Every JSON text the cloud takes, a device's message or an app's body, is I-JSON that holds no U+0000 and nests at most 64 deep ([ai-platform ADR-0014](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0014-json-every-side-can-hold.md)). What is not, it refuses whole, before it keeps any of it, and says why without naming a value. It refuses repeated names too, which I-JSON forbids, so that no value goes unchecked: Python's reader would drop all but the last.
 - **Keys rotate.** The keys that sign rooms' tokens, and those that verify sessions, are replaced on a schedule, and the old ones honoured until their tokens expire.
 - **The law.** Personal data follows the law where the owners live, Vietnam's first. ADR-0006 settles it before the first real users. The products are for adults, not directed to children (PRIV-7).
@@ -203,7 +203,7 @@ ai-cloud/
 │   ├── shared/          and migrations/: the Alembic environment of every module
 │   ├── accounts/  devices/  conversation/  memory/
 │   ├── skills/  updates/  operations/  notifications/
-│   └── entry/           api.py · migrate.py · agent.py · worker.py
+│   └── entry/           api.py · websocket.py · migrate.py · agent.py · worker.py
 ├── config/              base.toml, and one file per environment
 ├── tests/               per module, and end to end against a simulated device
 ├── deploy/              Compose files and container images

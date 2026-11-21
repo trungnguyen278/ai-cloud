@@ -552,6 +552,7 @@ async def test_a_leave_takes_a_device_s_answers_before_the_device(cloud, engine)
         store=PostgresStore(elsewhere),
         presence=Absent(),  # type: ignore[arg-type]
         hints=Unheard(),  # type: ignore[arg-type]
+        connection_rate=None,  # type: ignore[arg-type]  # no handshake here
     )
     # What a session knows of its device's registration.
     session = SimpleNamespace(

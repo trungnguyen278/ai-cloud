@@ -2,6 +2,8 @@
 """What can go wrong with the accounts' use cases. Messages say what happened, in a few
 words for the logs and the error's description; never a token, an email or a name."""
 
+import math
+
 
 class AccountsError(Exception):
     """An error of the accounts' use cases."""
@@ -29,7 +31,8 @@ class Unauthenticated(AccountsError):
 
 class RateLimited(AccountsError):
     def __init__(self, retry_after: float) -> None:
-        super().__init__(f"over the rate: retry after {retry_after:.0f} s")
+        # In whole seconds, as Retry-After says it: 0.2 s rounded would be 0.
+        super().__init__(f"over the rate: retry after {math.ceil(retry_after)} s")
         self.retry_after = retry_after
 
 

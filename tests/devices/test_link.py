@@ -4,8 +4,10 @@ Staying connected, The session, Errors), on a WebSocket that uvicorn serves, aga
 PostgreSQL and Redis."""
 
 import asyncio
+import base64
 import contextlib
 import json
+import logging
 import socket
 import time
 import uuid
@@ -14,18 +16,21 @@ from random import Random
 from string import ascii_letters
 from typing import Any
 
+import httptools
 import pytest
 import redis.asyncio
 from app_api import Cloud, bearer, conforms
 from device import Device
-from link import DEEP, PATH, hello, linked, refused, served, token
-from websockets.asyncio.client import connect
+from link import DEEP, PATH, WAIT, hello, linked, port, refused, running, served, token, url
+from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
+from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from ai_cloud.accounts.api import HomeDeleted
-from ai_cloud.devices.adapters.postgres import PostgresStore
+from ai_cloud.devices.adapters.postgres import PostgresStore, PostgresTransaction
 from ai_cloud.devices.adapters.redis import PRESENCE_PREFIX, RedisPresence
-from ai_cloud.devices.api import MAX_MESSAGE, consumers
+from ai_cloud.devices.api import CONNECTION_RATE_PREFIX, MAX_MESSAGE, consumers
+from ai_cloud.entry import websocket
 from ai_cloud.entry.api import ApiServer, server_config
 from ai_cloud.shared.database import create_engine
 from ai_cloud.shared.events import Event
@@ -34,6 +39,9 @@ pytestmark = pytest.mark.anyio
 
 # Short times, so that what waits for them is quick.
 QUICK = {"devices": {"link": {"check_interval": 0.2, "presence_ttl": 2, "close_timeout": 1}}}
+# The cloud answers each ping at once, for the window of a device that reads nothing to fill
+# soon.
+MANY = {"rate": 100_000, "burst": 100_000, "backlog": 100_000}
 
 
 async def registered(cloud: Cloud) -> tuple[dict[str, Any], dict[str, Any], Device]:
@@ -140,7 +148,7 @@ async def test_the_hellos_open_a_session(cloud) -> None:
     async with served(cloud) as url:
         async with linked(url, await token(cloud, device)) as link:
             answer = await link.open(protocol="3.7")
-            assert answer["protocol"] == "3.3"  # the lower of the two minors
+            assert answer["protocol"] == "3.4"  # the lower of the two minors
             assert answer["resumed"] is False
             assert uuid.UUID(answer["session"]).version == 7
             assert answer["ping_interval"] == cloud.settings.devices.link.ping_interval
@@ -416,12 +424,17 @@ async def test_a_message_larger_than_the_protocol_allows_closes_the_connection(
         await until(lambda: _ended_as(caplog, ["too_big", "too_big"]))
 
 
+# The smallest fragment that a side sends, but its message's last (Frames, since 3.4).
+KIB = 1024
+
+
 @pytest.mark.parametrize("compression", ["deflate", None])
 async def test_a_message_of_1_mib_is_read_and_one_byte_more_is_not(
     cloud, compression: str | None
 ) -> None:
     """A side receives every message up to 1 MiB, one of exactly 1 MiB included (Messages,
-    Sizes, since 3.3): uvicorn's limit counts as the protocol does, in one frame or several.
+    Sizes, since 3.3): uvicorn's limit counts as the protocol does, in one frame or in
+    fragments of 1 KiB, the smallest that a side sends (Frames, since 3.4), back to back.
     The cloud declines compression, with which websockets refuses some messages of 1 MiB."""
     _, _, device = await registered(cloud)
     random = Random(3)
@@ -434,7 +447,10 @@ async def test_a_message_of_1_mib_is_read_and_one_byte_more_is_not(
             await link.say(text)
             assert await link.hear() == {"type": "pong", "received": 0}
             # websockets sends what it is given in pieces as one message, in fragments.
-            await link.ws.send([text[n : n + 4096] for n in range(0, len(text), 4096)])
+            fragments = [text[n : n + KIB] for n in range(0, len(text), KIB)]
+            await link.ws.send(fragments)
+            await link.ws.send(fragments)
+            assert await link.hear() == {"type": "pong", "received": 0}
             assert await link.hear() == {"type": "pong", "received": 0}
         await link.say(_ping(MAX_MESSAGE + 1, pad))
         assert await link.ended() == 1009
@@ -506,7 +522,7 @@ async def test_a_device_that_leaves_its_home_is_removed_then_told(cloud) -> None
     access_token = await token(cloud, device)
     async with served(cloud) as url:
         async with linked(url, access_token) as link:
-            assert (await link.open())["protocol"] == "3.3"
+            assert (await link.open())["protocol"] == "3.4"
             await link.say({"type": "leave", "seq": 1})
             assert await link.hear() == {"type": "bye", "reason": "left"}
             assert await link.ended() == 1000
@@ -735,49 +751,52 @@ async def test_a_server_stops_even_if_its_devices_cannot_be_asked_to_connect_aga
     assert "could not be asked to connect again" in caplog.text
 
 
+async def reading_nothing(cloud: Cloud, server: ApiServer, device: Device) -> ClientConnection:
+    """A session of ``device``, at ``server``, that reads nothing and has little room for what
+    it does not read, once what the cloud sends it waits: past what its connection buffers.
+    The cloud must answer at once what it sends (MANY)."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
+    sock.setblocking(False)
+    await asyncio.get_running_loop().sock_connect(sock, ("127.0.0.1", port(server)))
+    reader = await connect(
+        url(server),
+        sock=sock,
+        additional_headers={"Authorization": f"Bearer {await token(cloud, device)}"},
+        ping_interval=None,
+        max_queue=1,
+    )
+    [connection] = server.server_state.connections
+    transport = connection.transport  # type: ignore[attr-defined]
+    transport.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
+    await reader.send(json.dumps(hello()))
+    await until(lambda: cloud.redis("EXISTS", PRESENCE_PREFIX + str(device.id)))
+    # Errors, until the cloud's writes wait.
+    seq = 0
+    async with asyncio.timeout(30):
+        while transport.get_write_buffer_size() < 2**16:
+            for _ in range(100):
+                seq += 1
+                await reader.send(json.dumps({"type": "device.changed", "seq": seq}))
+            await asyncio.sleep(0)
+    return reader
+
+
 async def test_a_server_stops_in_time_though_a_device_reads_nothing(make_cloud) -> None:
-    # The cloud answers each ping at once, for the device's window to fill soon.
-    many = {"rate": 100_000, "burst": 100_000, "backlog": 100_000}
     cloud = await make_cloud(
-        api={"shutdown_timeout": 1}, devices={"link": {**many, "close_timeout": 1}}
+        api={"shutdown_timeout": 1}, devices={"link": {**MANY, "close_timeout": 1}}
     )
     tokens, home, device = await registered(cloud)
     config = server_config(cloud.app, cloud.settings, host="127.0.0.1", port=0, lifespan="off")
     server = ApiServer(config, cloud.app.state.going_away)
     serving = asyncio.create_task(server.serve())
-    loop = asyncio.get_running_loop()
     try:
 
         async def started() -> bool:
             return server.started
 
         await until(started)
-        port = server.servers[0].sockets[0].getsockname()[1]
-        # A device that reads nothing, with little room for what it does not read.
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024)
-        sock.setblocking(False)
-        await loop.sock_connect(sock, ("127.0.0.1", port))
-        reader = await connect(
-            f"ws://127.0.0.1:{port}{PATH}",
-            sock=sock,
-            additional_headers={"Authorization": f"Bearer {await token(cloud, device)}"},
-            ping_interval=None,
-            max_queue=1,
-        )
-        [connection] = server.server_state.connections
-        transport = connection.transport  # type: ignore[attr-defined]
-        transport.get_extra_info("socket").setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024)
-        await reader.send(json.dumps(hello()))
-        await until(lambda: cloud.redis("EXISTS", PRESENCE_PREFIX + str(device.id)))
-        # Errors, until the cloud's writes wait: past what its connection buffers.
-        seq = 0
-        async with asyncio.timeout(30):
-            while transport.get_write_buffer_size() < 2**16:
-                for _ in range(100):
-                    seq += 1
-                    await reader.send(json.dumps({"type": "device.changed", "seq": seq}))
-                await asyncio.sleep(0)
+        reader = await reading_nothing(cloud, server, device)
         server.should_exit = True
         # Its sessions' close_timeout, then its own shutdown_timeout.
         async with asyncio.timeout(4):
@@ -790,3 +809,283 @@ async def test_a_server_stops_in_time_though_a_device_reads_nothing(make_cloud) 
             await serving
     assert not await cloud.redis("EXISTS", PRESENCE_PREFIX + str(device.id))
     assert await _disconnected(cloud, tokens, home, device)  # and registered still
+
+
+# What one device can exhaust (docs/decisions/0012-what-one-device-can-exhaust.md).
+
+
+async def test_a_device_that_reads_nothing_is_cut_once_its_session_ends(make_cloud) -> None:
+    cloud = await make_cloud(
+        api={"ws_close_timeout": 0.5}, devices={"link": {**MANY, "close_timeout": 0.5}}
+    )
+    _, _, device = await registered(cloud)
+    async with running(cloud) as server:
+        reader = await reading_nothing(cloud, server, device)
+        # A frame that the cloud cannot answer ends the session, whose bye cannot leave.
+        await reader.send(b"binary")
+
+        async def cut() -> bool:
+            return not server.server_state.connections
+
+        await until(cut)
+        reader.transport.abort()
+
+
+async def test_a_close_waits_for_the_device_s_own_no_longer_than_ws_close_timeout(
+    make_cloud,
+) -> None:
+    cloud = await make_cloud(api={"ws_close_timeout": 0.5})
+    _, _, device = await registered(cloud)
+    async with running(cloud) as server, linked(url(server), await token(cloud, device)) as link:
+        await link.open()
+        # A device that hears nothing more, so never answers the cloud's close.
+        link.ws.transport.pause_reading()
+        await link.say(b"binary")
+
+        async def closed() -> bool:
+            return not server.server_state.connections
+
+        # Within until's 5 s, where uvicorn waits 10 s.
+        await until(closed)
+        link.ws.transport.abort()
+
+
+async def test_a_device_that_connects_too_often_is_told_when_to_try_again(make_cloud) -> None:
+    cloud = await make_cloud(devices={"connection_rate": {"limit": 2, "period": 60}})
+    _, _, device = await registered(cloud)
+    _, _, other = await registered(cloud)
+    async with served(cloud) as at:
+        access_token = await token(cloud, device)
+        for _ in range(2):
+            async with linked(at, access_token) as link:
+                await link.open()
+        # Counted for the device, whatever its token.
+        refusal = await refused(at, await token(cloud, device))
+        assert refusal.status == 429
+        assert refusal.headers["content-type"] == "application/problem+json"
+        assert refusal.body["status"] == 429
+        # Two a minute: the next in 30 s, in whole seconds, none of them early.
+        retry_after = refusal.headers["retry-after"]
+        assert 25 <= int(retry_after) <= 30
+        assert refusal.body["detail"] == f"over the rate: retry after {retry_after} s"
+        # Each device counts on its own.
+        async with linked(at, await token(cloud, other)) as link:
+            await link.open()
+
+
+async def test_a_replica_that_takes_no_more_connections_says_when_to_try_again(
+    make_cloud,
+) -> None:
+    cloud = await make_cloud(devices={"link": {"connect_rate": 0.01, "connect_burst": 2}})
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at:
+        access_token = await token(cloud, device)
+        for _ in range(2):
+            async with linked(at, access_token) as link:
+                await link.open()
+        refusal = await refused(at, access_token)
+        assert refusal.status == 503
+        assert refusal.headers["content-type"] == "application/problem+json"
+        # One a hundred seconds: the next in 100 s.
+        assert 95 <= int(refusal.headers["retry-after"]) <= 100
+
+
+def forged(cloud: Cloud, device: Device) -> str:
+    """A token as the cloud's, for ``device``, but for its signature."""
+    header, claims, _ = signed(cloud, device).split(".")
+    signature = base64.urlsafe_b64encode(bytes(64)).rstrip(b"=").decode()
+    return f"{header}.{claims}.{signature}"
+
+
+async def test_attempts_without_a_valid_token_lock_no_device_out(make_cloud) -> None:
+    cloud = await make_cloud(
+        devices={
+            "connection_rate": {"limit": 1, "period": 60},
+            "link": {"connect_rate": 0.01, "connect_burst": 2},
+        }
+    )
+    _, _, eager = await registered(cloud)
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at:
+        eager_token = await token(cloud, eager)
+        async with linked(at, eager_token) as link:
+            await link.open()
+        # Past its own rate, however often it tries.
+        for _ in range(10):
+            assert (await refused(at, eager_token)).status == 429
+        for access_token in (None, "not a token", forged(cloud, device)) * 10:
+            assert (await refused(at, access_token)).status == 401
+        # None of them spent what the replica takes: it takes the second of its two.
+        async with linked(at, await token(cloud, device)) as link:
+            await link.open()
+
+
+async def test_a_device_whose_connections_cannot_be_counted_is_told_to_try_again(
+    cloud, caplog: pytest.LogCaptureFixture
+) -> None:
+    _, _, device = await registered(cloud)
+    # Redis fails as the device's connection is counted: its key holds what no count reads.
+    await cloud.redis("HSET", CONNECTION_RATE_PREFIX + str(device.id), "due", "0")
+    async with served(cloud) as at:
+        refusal = await refused(at, await token(cloud, device))
+    assert refusal.status == 503
+    assert refusal.headers["content-type"] == "application/problem+json"
+    assert refusal.body["status"] == 503
+    # After its backoff: Redis says nothing of when it will count again.
+    assert "retry-after" not in refusal.headers
+    assert "Exception in ASGI application" not in caplog.text
+
+
+async def test_a_connection_that_fails_to_open_is_answered_as_the_api_answers(
+    cloud, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, _, device = await registered(cloud)
+    access_token = await token(cloud, device)
+
+    async def failing(*args: object) -> None:
+        raise RuntimeError("the registry failed")
+
+    monkeypatch.setattr(PostgresTransaction, "device", failing)
+    async with served(cloud) as at:
+        refusal = await refused(at, access_token)
+    assert refusal.status == 500
+    assert refusal.headers["content-type"] == "application/problem+json"
+    assert refusal.body["status"] == 500
+    assert "a device's connection could not be opened" in caplog.text
+    assert "Exception in ASGI application" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "kind", ["pings", "pongs", "a fragment of 1,023 bytes", "a flood of continuations"]
+)
+async def test_frames_that_break_the_link_s_rules_close_the_connection(
+    make_cloud, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    """Pings and unsolicited Pongs past twice the ping interval of them, and a fragment under
+    1 KiB that is not its message's last (Messages, Frames, since 3.4)."""
+    caplog.set_level(logging.INFO)
+    # The allowance comes back no faster than the test runs.
+    monkeypatch.setattr(websocket, "PINGS_A_SECOND", 1e-3)
+    cloud = await make_cloud(devices={"link": {"ping_interval": 2}})
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at, linked(at, await token(cloud, device)) as link:
+        await link.open()
+        match kind:
+            case "pings" | "pongs":
+                send = link.ws.ping if kind == "pings" else link.ws.pong
+                for _ in range(4):
+                    await send()
+                await link.say({"type": "ping", "received": 0})
+                assert (await link.hear())["type"] == "pong"
+                await send()
+            case "a fragment of 1,023 bytes":
+                await link.ws.send(["{" + " " * (KIB - 2), "}"])
+            case "a flood of continuations":
+                await link.ws.send(["{" + " " * (KIB - 1), *[""] * 1000, "}"])
+        assert await link.ended() == 1008
+        await until(lambda: _ended_as(caplog, ["flooded"]))
+
+
+async def test_text_that_is_no_utf_8_closes_the_connection(
+    cloud, caplog: pytest.LogCaptureFixture
+) -> None:
+    """With 1007, as WebSocket fails a connection over it (RFC 6455, 8.1), and as no error of
+    the cloud's: uvicorn would log one, with a traceback."""
+    caplog.set_level(logging.INFO)
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at, linked(at, await token(cloud, device)) as link:
+        await link.open()
+        # Below websockets' own check.
+        link.ws.protocol.send_text(b"\xff")
+        link.ws.send_data()
+        assert await link.ended() == 1007
+        await until(lambda: _ended_as(caplog, ["invalid_text"]))
+    assert [each.getMessage() for each in caplog.records if each.levelno >= logging.ERROR] == []
+
+
+# A request to upgrade to what uvicorn does not serve, HTTP/2 over plain TCP.
+UNSUPPORTED_UPGRADE = (
+    f"GET {PATH} HTTP/1.1\r\nHost: cloud.test\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+).encode()
+# A port past 65,535, which httptools' URL parser refuses (tried 2026-11-22).
+INVALID_URL = b"GET http://cloud.test:65536/ HTTP/1.1\r\nHost: cloud.test\r\n\r\n"
+
+
+async def answered(server: ApiServer, request: bytes) -> bytes:
+    """The status line that ``server`` answers ``request`` with, sent as it is."""
+    reader, writer = await asyncio.open_connection("127.0.0.1", port(server))
+    try:
+        writer.write(request)
+        async with asyncio.timeout(WAIT):
+            return await reader.readuntil(b"\r\n")
+    finally:
+        writer.close()
+
+
+@pytest.mark.parametrize("access_log", [False, True])
+async def test_handshakes_are_logged_as_requests_are(
+    make_cloud, caplog: pytest.LogCaptureFixture, access_log: bool
+) -> None:
+    caplog.set_level(logging.INFO)
+    cloud = await make_cloud(api={"access_log": access_log})
+    _, _, device = await registered(cloud)
+    access_token = await token(cloud, device)
+    async with running(cloud) as server:
+        at = url(server)
+        caplog.clear()
+        for refused_token in (None, "not a token", forged(cloud, device)):
+            await refused(at, refused_token)
+        # Nor does a request that uvicorn cannot parse, or upgrade, a URL whose port httptools
+        # refuses as uvicorn's callback parses it among them.
+        for request in (b"NOT HTTP\r\n\r\n", INVALID_URL, UNSUPPORTED_UPGRADE):
+            assert (await answered(server, request)).startswith(b"HTTP/1.1 ")
+        # A refusal writes nothing of its own: a flood of them would write lines for each.
+        refusals = [each.getMessage() for each in caplog.records]
+        if access_log:
+            assert sum('"WebSocket /device/v3/link" 401' in line for line in refusals) == 3
+            assert "Invalid HTTP request received." in refusals
+            assert "Unsupported upgrade request." in refusals
+        else:
+            assert refusals == []
+        async with linked(at, access_token) as link:
+            await link.open()
+    handshakes = [
+        each.getMessage() for each in caplog.records if '"WebSocket ' in each.getMessage()
+    ]
+    assert len(handshakes) == (4 if access_log else 0), handshakes
+    warnings = [each for each in caplog.records if each.levelno >= logging.WARNING]
+    invalid = "Invalid HTTP request received."
+    unserved = [invalid, invalid, "Unsupported upgrade request."]
+    assert [each.getMessage() for each in warnings] == (unserved if access_log else [])
+    # A peer's error, with no traceback of the server's.
+    assert not any(each.exc_info for each in warnings)
+
+
+class Failed(Exception):
+    """An error of the server's own code."""
+
+
+@pytest.mark.parametrize("access_log", [False, True])
+async def test_a_request_that_the_server_fails_to_parse_is_logged_with_its_error(
+    make_cloud, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch, access_log: bool
+) -> None:
+    """uvicorn logs it as a request that cannot be served, as httptools gives the error of
+    one of uvicorn's callbacks as its own (httptools 0.9.0, parser.pyx)."""
+
+    def failing(protocol: object, url: bytes) -> None:
+        raise Failed
+
+    caplog.set_level(logging.INFO)
+    monkeypatch.setattr(HttpToolsProtocol, "on_url", failing)
+    cloud = await make_cloud(api={"access_log": access_log})
+    async with running(cloud) as server:
+        caplog.clear()
+        assert (await answered(server, b"GET / HTTP/1.1\r\nHost: cloud.test\r\n\r\n")).startswith(
+            b"HTTP/1.1 400 "
+        )
+    [logged] = [
+        each for each in caplog.records if each.getMessage() == "Invalid HTTP request received."
+    ]
+    assert logged.exc_info is not None
+    assert isinstance(logged.exc_info[1], httptools.HttpParserCallbackError)
+    assert isinstance(logged.exc_info[1].__context__, Failed)

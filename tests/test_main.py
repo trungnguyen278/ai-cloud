@@ -107,6 +107,7 @@ def test_the_environment_comes_from_the_command_line_or_a_variable(
     same = {
         "port": 8123,
         "forwarded_allow_ips": ["127.0.0.1", "::1"],
+        "ws_close_timeout": 2,
         "shutdown_timeout": 3,
     }
     assert served == [

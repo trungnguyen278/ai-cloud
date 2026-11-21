@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The control channel's session, as the cloud link 3.3 has it, without I/O
+"""The control channel's session, as the cloud link 3.4 has it, without I/O
 (platform/protocols/cloud/README.md: The control channel, Staying connected, Resuming a
 session, Messages, The session, Errors).
 
@@ -25,7 +25,7 @@ from ai_cloud.shared.protocols import Schema, Unreadable, read_json
 # Fixed by the cloud link (platform/protocols/cloud/README.md).
 PROTOCOL = "cloud"  # its schema, platform/protocols/cloud/schema.json
 PATH = "/device/v3/link"  # The cloud's address: the path carries the major version
-MAJOR, MINOR = 3, 3  # the version the cloud speaks
+MAJOR, MINOR = 3, 4  # the version the cloud speaks
 LEAVE_MINOR = 2  # leave: "in a session of 3.2 or later only"
 MAX_MESSAGE = 1 << 20  # Messages, Sizes: "A message holds up to 1 MiB of UTF-8"
 UNNUMBERED = frozenset({"hello", "ping", "pong", "reconnect", "bye"})  # Resuming, Numbers
@@ -81,6 +81,12 @@ class Close(IntEnum):
     NORMAL = 1000
     # Nothing came for two ping intervals: the device seems gone, and resumes if it is not.
     GOING_AWAY = 1001
+    # Text that is no UTF-8: "invalid frame payload data". The server closes with it (RFC
+    # 6455, 8.1).
+    INVALID_TEXT = 1007
+    # Frames below the session broke the link's rules for them: "policy violation". The
+    # server closes with it (Messages, Frames, since 3.4).
+    POLICY = 1008
     # A message larger than MAX_MESSAGE: "message too big". The server closes with it, and
     # either side may; both then end the session (Messages, Sizes).
     TOO_BIG = 1009

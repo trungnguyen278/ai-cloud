@@ -14,6 +14,7 @@ dependencies = [
   "alembic>=1.20.1,<2",  # each module's migrations
   "asyncpg>=0.32,<1",  # PostgreSQL's driver
   "fastapi>=0.162,<1",  # the api process (docs/decisions/0002-stack.md)
+  "httptools>=0.9,<1",  # uvicorn's HTTP parser, whose errors the api's log tells apart
   "httpx2>=2.16,<3",  # the providers' published keys; Starlette's test client
   "jsonschema>=4.26,<5",  # checking bodies against the protocols' schemas (SEC-14)
   "pydantic>=2.14,<3",  # the configuration's checks, and FastAPI's
@@ -22,6 +23,7 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.1.6,<2.2",  # its Core; a minor version may change behaviour
   "tzdata>=2026.6",  # the IANA time zones a home may name, the same on every host
   "uvicorn[standard]>=0.54,<1",  # serves the api
+  "websockets>=17.3,<18",  # the api's WebSocket protocol, on uvicorn's; the tests' devices
 ]
 
 [project.scripts]
@@ -34,7 +36,6 @@ dev = [
   "pyyaml>=6.0.3,<7",  # the tests read the images to run from the development Compose file
   "ruff>=0.17,<0.18",  # its rules change with each minor version
   "testcontainers>=4.15,<5",  # PostgreSQL and Redis for the tests, in Docker
-  "websockets>=17.3,<18",  # the tests' devices, on the control channel
 ]
 
 [tool.hatch.build.targets.wheel]

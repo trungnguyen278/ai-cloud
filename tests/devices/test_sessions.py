@@ -4,23 +4,28 @@ ports of the tests' own: what timing decides elsewhere, such as an end that come
 session starts, happens here when a test says (docs/decisions/0011-control-channels.md)."""
 
 import asyncio
+import contextlib
 import json
+import time
 import uuid
 from collections.abc import AsyncIterator, Awaitable, Callable, Collection, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from uuid import UUID
 
 import pytest
 from link import DEEP, hello
 
-from ai_cloud.devices.domain.errors import Unavailable
+from ai_cloud.devices.domain.errors import RateLimited, Unauthenticated, Unavailable
 from ai_cloud.devices.domain.link import NOT_FIRST, Closed
 from ai_cloud.devices.domain.model import Description, Device, Opening, TokenHolder
 from ai_cloud.devices.service.links import RECONNECT, Links
 from ai_cloud.devices.settings import LinkSettings
+from ai_cloud.shared import rates
 from ai_cloud.shared.protocols import platform_dir
+from ai_cloud.shared.rates import RatesUnavailable
 
 pytestmark = pytest.mark.anyio
 
@@ -32,6 +37,10 @@ SETTINGS = LinkSettings(
     rate=1000,
     burst=1000,
     backlog=10,
+    text_rate=10_000_000,
+    text_burst=1 << 20,
+    connect_rate=1000,
+    connect_burst=1000,
     check_interval=20,
     presence_ttl=60,
     close_timeout=1,
@@ -133,6 +142,19 @@ class Presence:
             del self.newest[device_id]
 
 
+class Rate:
+    """How often each device may connect: as often as it likes, but for those in ``waits``,
+    which wait as long as it says. ``asked`` names each device asked of."""
+
+    def __init__(self) -> None:
+        self.waits: dict[str, float] = {}
+        self.asked: list[str] = []
+
+    async def wait(self, subject: str) -> float:
+        self.asked.append(subject)
+        return self.waits.get(subject, 0)
+
+
 class Hints:
     """``publishing`` runs as a hint is sent: as this replica would hear it, for one."""
 
@@ -158,6 +180,7 @@ def links(
         store=store,  # type: ignore[arg-type]
         presence=presence or Presence(),
         hints=hints or Hints(),  # type: ignore[arg-type]
+        connection_rate=Rate(),
     )
 
 
@@ -887,12 +910,107 @@ async def test_a_session_the_cloud_fails_ends_whatever_its_connection_does(
     failing: type[Failing],
 ) -> None:
     store = Store()
-    replica = links(store, close_timeout=0.1)
+    replica = links(store, close_timeout=0.2)
     channel = failing(0)
+    started_at = asyncio.get_running_loop().time()
     async with asyncio.timeout(2):
         await replica.serve(channel, held(store))  # type: ignore[arg-type]
     assert channel.closed == 1011
     assert replica._held() == []
+    # Its bye and its close within one close_timeout together, not one each.
+    assert asyncio.get_running_loop().time() - started_at < 0.3
+
+
+class Deafened(Channel):
+    """A connection whose device reads nothing once ``deaf`` is set, its close neither."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.deaf = False
+
+    async def send(self, text: str) -> None:
+        if self.deaf:
+            await asyncio.Event().wait()
+        await super().send(text)
+
+    async def close(self, code: int) -> None:
+        await super().close(code)
+        if self.deaf:
+            await asyncio.Event().wait()
+
+
+async def test_a_session_that_ends_waits_one_close_timeout_for_a_device_that_reads_nothing() -> (
+    None
+):
+    store = Store()
+    replica = links(store, close_timeout=0.2)
+    channel = Deafened()
+    serving = await started(replica, held(store), channel)
+    channel.deaf = True
+    started_at = asyncio.get_running_loop().time()
+    [session] = replica._held()
+    session.end(RECONNECT)
+    async with asyncio.timeout(2):
+        await serving
+    assert channel.closed == 1012
+    # What it sent last and its close within one close_timeout together, not one each.
+    assert asyncio.get_running_loop().time() - started_at < 0.3
+
+
+def end_held(replica: Links, reason: str) -> None:
+    for session in replica._held():
+        session.end(reason)
+
+
+@pytest.mark.parametrize(
+    ("case", "code"),
+    [
+        ("no hello", 1000),
+        ("bye first", 1000),
+        ("another message first", 1000),
+        ("a reconnect before the hello", 1012),
+        ("an end before the hello", 1000),
+        ("a reconnect as it starts", 1012),
+        ("a device no longer registered", 1000),
+    ],
+)
+async def test_an_end_before_the_session_is_carried_waits_one_close_timeout_too(
+    case: str, code: int
+) -> None:
+    """A device that reads nothing, and says no hello or one that the cloud refuses, holds
+    its connection no longer than one that the session ended."""
+    store = Store()
+    replica = links(store, hello_timeout=0.1, close_timeout=0.2)
+    channel = Deaf()
+    if case == "a device no longer registered":
+        opening = Opening(uuid.uuid7(), HOME, REGISTERED)
+    else:
+        opening = held(store)
+    started_at = asyncio.get_running_loop().time()
+    serving = asyncio.create_task(replica.serve(channel, opening))  # type: ignore[arg-type]
+    await asyncio.sleep(0)
+    match case:
+        case "bye first":
+            channel.say({"type": "bye", "reason": "error"})
+        case "another message first":
+            channel.say({"type": "ping", "received": 0})
+        case "a reconnect before the hello":
+            end_held(replica, RECONNECT)
+        case "an end before the hello":
+            end_held(replica, "revoked")
+        case "a reconnect as it starts":
+            store.describing = lambda: end_held(replica, RECONNECT)
+            channel.say(hello())
+        case "a device no longer registered":
+            channel.say(hello())
+    async with asyncio.timeout(2):
+        await serving
+    assert channel.closed == code
+    assert replica._held() == []
+    # Its bye and its close within one close_timeout together, after the hello_timeout of a
+    # hello that never came.
+    waited = 0.1 if case == "no hello" else 0
+    assert asyncio.get_running_loop().time() - started_at < waited + 0.3
 
 
 class Unhurried:
@@ -913,8 +1031,14 @@ class Unhurried:
 
 
 class Tokens:
+    """Tokens that are their device's id, and are valid if they are one."""
+
     def authenticate(self, access_token: str) -> TokenHolder:
-        return TokenHolder(uuid.UUID(access_token), int(REGISTERED.timestamp()))
+        try:
+            device_id = uuid.UUID(access_token)
+        except ValueError:
+            raise Unauthenticated("the token is invalid") from None
+        return TokenHolder(device_id, int(REGISTERED.timestamp()))
 
 
 async def test_a_handshake_that_the_replica_goes_away_during_is_refused() -> None:
@@ -926,6 +1050,7 @@ async def test_a_handshake_that_the_replica_goes_away_during_is_refused() -> Non
         store=store,  # type: ignore[arg-type]
         presence=Presence(),
         hints=Hints(),  # type: ignore[arg-type]
+        connection_rate=Rate(),
     )
     opening = asyncio.create_task(replica.open(str(uuid.uuid7())))
     await store.reading.wait()
@@ -933,6 +1058,176 @@ async def test_a_handshake_that_the_replica_goes_away_during_is_refused() -> Non
     store.go.set()
     with pytest.raises(Unavailable):
         await opening
+
+
+class Counted(Tokens):
+    """Tokens, of which ``authenticated`` counts those checked."""
+
+    def __init__(self) -> None:
+        self.authenticated = 0
+
+    def authenticate(self, access_token: str) -> TokenHolder:
+        self.authenticated += 1
+        return super().authenticate(access_token)
+
+
+def handshakes(store: Any, **changes: Any) -> tuple[Links, Counted, Rate]:
+    """A replica, with ``changes`` to its settings, that checks handshakes against ``store``;
+    its tokens and its devices' rate."""
+    tokens, rate = Counted(), Rate()
+    replica = Links(
+        settings=SETTINGS.model_copy(update=changes),
+        leeway=30,
+        tokens=tokens,  # type: ignore[arg-type]
+        store=store,
+        presence=Presence(),
+        hints=Hints(),  # type: ignore[arg-type]
+        connection_rate=rate,
+    )
+    return replica, tokens, rate
+
+
+async def test_a_replica_takes_so_many_connections_then_says_when_to_try_again() -> None:
+    store = Store()
+    replica, tokens, rate = handshakes(store, connect_rate=0.5, connect_burst=2)
+    opening = held(store)
+    for _ in range(2):
+        await replica.open(str(opening.device_id))
+    with pytest.raises(Unavailable) as refused:
+        await replica.open(str(opening.device_id))
+    # Each came with a valid token, within its device's own rate.
+    assert tokens.authenticated == 3
+    assert len(rate.asked) == 3
+    assert refused.value.retry_after is not None
+    assert 1.9 < refused.value.retry_after <= 2
+
+
+@pytest.mark.parametrize("access_token", [None, "not a token"])
+async def test_attempts_without_a_valid_token_spend_nothing_the_cloud_counts(
+    access_token: str | None,
+) -> None:
+    store = Store()
+    replica, _, rate = handshakes(store, connect_rate=0.001, connect_burst=1)
+    for _ in range(10):
+        with pytest.raises(Unauthenticated):
+            await replica.open(access_token)
+    assert rate.asked == []
+    # A device then connects as if none had come.
+    await replica.open(str(held(store).device_id))
+
+
+async def test_a_device_past_its_own_rate_spends_none_of_the_replicas() -> None:
+    store = Store()
+    replica, _, rate = handshakes(store, connect_rate=0.001, connect_burst=1)
+    eager = str(uuid.uuid7())
+    rate.waits[eager] = 5
+    for _ in range(10):
+        with pytest.raises(RateLimited):
+            await replica.open(eager)
+    await replica.open(str(held(store).device_id))
+
+
+async def test_a_device_whose_count_cannot_be_read_is_refused_until_it_can() -> None:
+    store = Unhurried()
+    replica, _, rate = handshakes(store)
+
+    async def unavailable(subject: str) -> float:
+        raise RatesUnavailable("the rates cannot be counted now")
+
+    rate.wait = unavailable  # type: ignore[method-assign]
+    with pytest.raises(Unavailable) as refused:
+        async with asyncio.timeout(5):
+            await replica.open(str(uuid.uuid7()))
+    # After its backoff, which no Retry-After overrides; and the registry was not read.
+    assert refused.value.retry_after is None
+    assert not store.reading.is_set()
+
+
+async def test_a_device_that_connects_too_often_is_told_before_the_registry_is_read() -> None:
+    store = Unhurried()
+    replica, _, rate = handshakes(store)
+    device_id = str(uuid.uuid7())
+    rate.waits[device_id] = 7.5
+    # The registry's read would wait for ever: refused before, the device does not.
+    with pytest.raises(RateLimited) as refused:
+        async with asyncio.timeout(5):
+            await replica.open(device_id)
+    assert refused.value.retry_after == 7.5
+    # Counted for the device that the token names.
+    assert rate.asked == [device_id]
+    assert not store.reading.is_set()
+
+
+def test_a_wait_is_told_in_whole_seconds_none_of_them_early() -> None:
+    assert str(RateLimited(0.2)) == "over the rate: retry after 1 s"
+
+
+async def test_what_a_device_sends_is_read_no_faster_than_its_text_rate() -> None:
+    store = Store()
+    replica = links(store, text_rate=100_000, text_burst=1000)
+    channel = Channel()
+    serving = await started(replica, held(store), channel)
+    pad = "a" * 50_000
+    start = time.monotonic()
+    for _ in range(3):
+        channel.say({"type": "ping", "received": 0, "pad": pad})
+    for _ in range(3):
+        assert (await channel.hear())["type"] == "pong"
+    # The first takes the full bucket and owes the rest of its length, as the second does
+    # then: each owes half a second.
+    assert time.monotonic() - start >= 0.9
+    channel.gone()
+    await serving
+
+
+async def test_a_device_that_connects_again_finds_what_it_spent_spent() -> None:
+    store = Store()
+    replica = links(store, text_rate=100_000, text_burst=1000)
+    opening = held(store)
+    channel = Channel()
+    serving = await started(replica, opening, channel)
+    # Its length past the burst is owed: 0.49 s.
+    channel.say({"type": "ping", "received": 0, "pad": "a" * 50_000})
+    assert (await channel.hear())["type"] == "pong"
+    channel.gone()
+    await serving
+    # Its next connection's hello, as any message, waits for what the last one owes.
+    start = time.monotonic()
+    serving = await started(replica, opening, Channel())
+    assert time.monotonic() - start >= 0.4
+    serving.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await serving
+
+
+async def test_a_budget_is_forgotten_once_whole_and_unused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = [0.0]
+    monkeypatch.setattr(rates, "time", SimpleNamespace(monotonic=lambda: now[0]))
+    replica = links(Store(), rate=10, burst=5)
+    gone, connected = uuid.uuid7(), uuid.uuid7()
+    for device_id in (gone, connected):
+        await replica.budget(device_id).take("{}")
+    replica._sessions[connected] = set()
+    replica._sweep()
+    # What one took is not made up yet: a new budget would forget it.
+    assert set(replica._budgets) == {gone, connected}
+    now[0] = 0.1
+    replica._sweep()
+    assert set(replica._budgets) == {connected}
+
+
+async def test_a_replica_forgets_budgets_as_it_checks() -> None:
+    replica = links(Store(), check_interval=0.01)
+    replica.budget(uuid.uuid7())
+    stop = asyncio.Event()
+    running = asyncio.create_task(replica.run(stop))
+    async with asyncio.timeout(5):
+        while replica._budgets:
+            await asyncio.sleep(0.01)
+    stop.set()
+    await running
 
 
 async def test_a_session_that_begins_as_the_replica_goes_away_closes_before_its_hello() -> None:

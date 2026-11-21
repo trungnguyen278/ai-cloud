@@ -2,6 +2,8 @@
 """What can go wrong with the devices' use cases. Messages say what happened, in a few words
 for the logs and the error's description; never a token, a challenge or a registration."""
 
+import math
+
 
 class DevicesError(Exception):
     """An error of the devices' use cases."""
@@ -14,12 +16,17 @@ class Unauthenticated(DevicesError):
 
 class Unavailable(DevicesError):
     """The cloud cannot take a device's connection now: the device connects again after its
-    backoff."""
+    backoff, and no sooner than ``retry_after`` seconds if the cloud knows when it can."""
+
+    def __init__(self, message: str, retry_after: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after = retry_after
 
 
 class RateLimited(DevicesError):
     def __init__(self, retry_after: float) -> None:
-        super().__init__(f"over the rate: retry after {retry_after:.0f} s")
+        # In whole seconds, as Retry-After says it: 0.2 s rounded would be 0.
+        super().__init__(f"over the rate: retry after {math.ceil(retry_after)} s")
         self.retry_after = retry_after
 
 

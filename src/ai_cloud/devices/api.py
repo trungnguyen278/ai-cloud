@@ -31,6 +31,7 @@ __all__ = ["MAX_MESSAGE", "MIGRATIONS", "Devices", "DevicesSettings", "consumers
 
 CHALLENGE_RATE_PREFIX = "devices:challenge-rate:"
 TOKEN_RATE_PREFIX = "devices:token-rate:"
+CONNECTION_RATE_PREFIX = "devices:connection-rate:"
 
 
 class Devices:
@@ -74,6 +75,9 @@ class Devices:
             store=store,
             presence=presence,
             hints=hints,
+            connection_rate=RedisRateLimiter(
+                redis, CONNECTION_RATE_PREFIX, settings.connection_rate
+            ),
         )
         self.router = router(service, device_tokens, self._links)
 

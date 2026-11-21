@@ -17,3 +17,4 @@ Each significant decision is a short file: context, decision, alternatives consi
 | [0009](0009-domain-events.md) | Domain events: an outbox in each module, relayed by the worker to Redis Streams | Accepted | 2026-11-05 |
 | [0010](0010-device-registrations.md) | Registering devices: challenges in PostgreSQL, used in the registration's transaction | Accepted | 2026-11-05 |
 | [0011](0011-control-channels.md) | The devices' control channels: sessions in the replica that holds them, presence and hints in Redis, and checks against the registry | Accepted, amended by the cloud link 3.1 | 2026-11-11 |
+| [0012](0012-what-one-device-can-exhaust.md) | What one device can exhaust: frames bounded below the session, connections cut once closed, handshakes counted once their token verifies, and reading bounded by length | Proposed | 2026-11-21 |
