@@ -2,11 +2,13 @@
 import json
 import re
 import time
+import uuid
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
+from link import hello
 
 from ai_cloud.shared import protocols
 from ai_cloud.shared.protocols import (
@@ -290,6 +292,24 @@ def _arrays(schema: Any) -> Iterator[dict[str, Any]]:
     elif isinstance(schema, list):
         for value in schema:
             yield from _arrays(value)
+
+
+def test_a_problem_takes_no_longer_for_more_errors() -> None:
+    """The first rule broken: weighing an error for each of 75,000 items took seconds."""
+    schema = protocol_schema("cloud", "from_device")
+    message = hello(languages=[{"n": n} for n in range(75_000)])
+    started = time.monotonic()
+    problem = schema.problem(message)
+    assert time.monotonic() - started < 1
+    assert problem == "languages.0: must be of type string"
+
+
+def test_a_problem_in_one_of_several_shapes_says_which_rule_it_breaks() -> None:
+    """jsonschema's best_match finds, among a oneOf's own errors, the one of the shape that the
+    value has: a text that is no UUID, rather than no null."""
+    response = {"response": str(uuid.uuid4()), "turn": "no uuid", "language": "vi"}
+    problem = protocol_schema("cloud", "response_start").problem(response)
+    assert problem is not None and problem.startswith("turn: breaks pattern")
 
 
 def test_every_array_of_unique_items_is_bounded() -> None:

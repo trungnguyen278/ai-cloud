@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The control channel's session, as the cloud link 3.2 has it, without I/O
+"""The control channel's session, as the cloud link 3.3 has it, without I/O
 (platform/protocols/cloud/README.md: The control channel, Staying connected, Resuming a
 session, Messages, The session, Errors).
 
@@ -25,7 +25,7 @@ from ai_cloud.shared.protocols import Schema, Unreadable, read_json
 # Fixed by the cloud link (platform/protocols/cloud/README.md).
 PROTOCOL = "cloud"  # its schema, platform/protocols/cloud/schema.json
 PATH = "/device/v3/link"  # The cloud's address: the path carries the major version
-MAJOR, MINOR = 3, 2  # the version the cloud speaks
+MAJOR, MINOR = 3, 3  # the version the cloud speaks
 LEAVE_MINOR = 2  # leave: "in a session of 3.2 or later only"
 MAX_MESSAGE = 1 << 20  # Messages, Sizes: "A message holds up to 1 MiB of UTF-8"
 UNNUMBERED = frozenset({"hello", "ping", "pong", "reconnect", "bye"})  # Resuming, Numbers
@@ -33,6 +33,10 @@ LARGEST_SEQ = 2**53 - 1  # $defs/seq: what a JSON number holds exactly
 SILENT_PINGS = 2  # Staying connected: closed after "nothing has come for two intervals"
 MAX_ERROR = 1024  # $defs/error, message
 MAX_BYE = 256  # $defs/bye, message: $defs/short_text
+# What a bye no_hello says, for the device's logs: which of its two causes ended the session
+# (hello; the first, as the example first-message.json has it).
+NOT_FIRST = "the first message was not a hello"
+NOT_IN_TIME = "the hello did not come in time"
 _VERSION = re.compile(r"([0-9]{1,3})\.([0-9]{1,3})")  # $defs/version: major.minor
 
 

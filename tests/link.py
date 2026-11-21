@@ -47,7 +47,7 @@ def hello(**changes: Any) -> dict[str, Any]:
     """A robot's hello, as the cloud link's example has it."""
     return {
         "type": "hello",
-        "protocol": "3.2",
+        "protocol": "3.3",
         "device": {"kind": "robot", "model": "concept-v0", "software": "0.4.0"},
         "time": "2026-10-28T03:20:00.250Z",
         "time_zone": "Asia/Ho_Chi_Minh",
@@ -113,11 +113,17 @@ class Link:
 
 
 @asynccontextmanager
-async def linked(url: str, access_token: str | None) -> AsyncIterator[Link]:
-    """A connection to the control channel at ``url``, with ``access_token``."""
+async def linked(url: str, access_token: str | None, **options: Any) -> AsyncIterator[Link]:
+    """A connection to the control channel at ``url``, with ``access_token``, and websockets'
+    ``options``, such as its compression."""
     headers = {} if access_token is None else {"Authorization": f"Bearer {access_token}"}
     async with connect(
-        url, additional_headers=headers, proxy=None, ping_interval=None, open_timeout=WAIT
+        url,
+        additional_headers=headers,
+        proxy=None,
+        ping_interval=None,
+        open_timeout=WAIT,
+        **options,
     ) as ws:
         yield Link(ws)
 

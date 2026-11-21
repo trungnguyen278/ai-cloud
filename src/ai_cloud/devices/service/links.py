@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """The devices' control channels: each connection's session, from the device's hello to its
-end, and what a replica of the api does for the sessions it holds (the cloud link 3.2,
+end, and what a replica of the api does for the sessions it holds (the cloud link 3.3,
 platform/protocols/cloud/README.md; docs/decisions/0011-control-channels.md).
 
 A connection opens once the device's access token verifies and the registry holds the
@@ -368,7 +368,7 @@ class Session:
             return DEVICE_BYE
         hello = link.read_hello(first, self._links.schema)
         if isinstance(hello, Bye):
-            return await self._refuse(hello)
+            return await self._refuse(hello, link.NOT_FIRST if hello is Bye.NO_HELLO else None)
         if isinstance(hello, Unanswerable):
             return await self._refuse(Bye.INVALID_MESSAGE, hello.why)
         try:
@@ -420,7 +420,7 @@ class Session:
                 return RECONNECT
             return await self._refuse(Bye(self.ending))
         if receiving not in done:
-            return await self._refuse(Bye.NO_HELLO)
+            return await self._refuse(Bye.NO_HELLO, link.NOT_IN_TIME)
         frame = receiving.result()
         if isinstance(frame, Closed):
             return _closed(frame)
