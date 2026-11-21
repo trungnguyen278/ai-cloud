@@ -203,7 +203,7 @@ def _refused(error: errors.DevicesError) -> OAuthError:
     its home before a factory reset (leave); ``invalid_grant`` for an assertion of a key it
     holds that fails, as RFC 6749 answers a grant that is invalid (5.2), not RFC 7523's
     ``invalid_client``, after which a clock far off would unbind a device. It tries again
-    after its backoff after any refusal but the first (the cloud link 3.2, Tokens from the
+    after its backoff after any refusal but the first (the cloud link 3.3, Tokens from the
     server)."""
     match error:
         case errors.RateLimited():

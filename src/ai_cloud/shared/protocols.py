@@ -223,9 +223,15 @@ class Schema:
         self._validator = _Validator(schema)
 
     def problem(self, instance: Any) -> str | None:
-        """What is wrong with ``instance``, or ``None`` if it matches."""
-        error = best_match(self._validator.iter_errors(instance))
-        return None if error is None else _describe(error)
+        """What is wrong with ``instance``, or ``None`` if it matches: the first rule that it
+        breaks, in the schema's order. jsonschema's ``is_valid`` stops there too, where its
+        ``best_match`` would weigh every error first, one for each item of a 1 MiB array
+        (75,000 of them took 3 to 5 s, ai-platform's dev log, 2026-11-20). Ajv also returns
+        after the first error unless told otherwise, and its security guidance says not to
+        collect them all in production (``allErrors``, ajv.js.org, read 2026-11-21)."""
+        error = next(self._validator.iter_errors(instance), None)
+        # best_match descends into an anyOf's or a oneOf's own errors, which it holds already.
+        return None if error is None else _describe(best_match([error]))
 
 
 @cache

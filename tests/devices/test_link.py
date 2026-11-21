@@ -10,6 +10,8 @@ import socket
 import time
 import uuid
 from datetime import UTC, datetime
+from random import Random
+from string import ascii_letters
 from typing import Any
 
 import pytest
@@ -23,7 +25,7 @@ from websockets.exceptions import ConnectionClosed
 from ai_cloud.accounts.api import HomeDeleted
 from ai_cloud.devices.adapters.postgres import PostgresStore
 from ai_cloud.devices.adapters.redis import PRESENCE_PREFIX, RedisPresence
-from ai_cloud.devices.api import consumers
+from ai_cloud.devices.api import MAX_MESSAGE, consumers
 from ai_cloud.entry.api import ApiServer, server_config
 from ai_cloud.shared.database import create_engine
 from ai_cloud.shared.events import Event
@@ -138,7 +140,7 @@ async def test_the_hellos_open_a_session(cloud) -> None:
     async with served(cloud) as url:
         async with linked(url, await token(cloud, device)) as link:
             answer = await link.open(protocol="3.7")
-            assert answer["protocol"] == "3.2"  # the lower of the two minors
+            assert answer["protocol"] == "3.3"  # the lower of the two minors
             assert answer["resumed"] is False
             assert uuid.UUID(answer["session"]).version == 7
             assert answer["ping_interval"] == cloud.settings.devices.link.ping_interval
@@ -240,6 +242,8 @@ async def test_a_first_message_that_is_no_hello_ends_the_session(
         # What it could not answer, the bye says, for the device's logs (Messages, Validation).
         if reason == "invalid_message":
             assert answer.pop("message")
+        if reason == "no_hello":
+            assert answer.pop("message") == "the first message was not a hello"
         assert answer == {"type": "bye", "reason": reason}
         assert await link.ended() == 1000
 
@@ -248,7 +252,11 @@ async def test_a_device_that_says_no_hello_in_time_is_told(make_cloud) -> None:
     cloud = await make_cloud(devices={"link": {"hello_timeout": 0.2}})
     _, _, device = await registered(cloud)
     async with served(cloud) as url, linked(url, await token(cloud, device)) as link:
-        assert await link.hear() == {"type": "bye", "reason": "no_hello"}
+        assert await link.hear() == {
+            "type": "bye",
+            "reason": "no_hello",
+            "message": "the hello did not come in time",
+        }
         assert await link.ended() == 1000
 
 
@@ -408,6 +416,39 @@ async def test_a_message_larger_than_the_protocol_allows_closes_the_connection(
         await until(lambda: _ended_as(caplog, ["too_big", "too_big"]))
 
 
+@pytest.mark.parametrize("compression", ["deflate", None])
+async def test_a_message_of_1_mib_is_read_and_one_byte_more_is_not(
+    cloud, compression: str | None
+) -> None:
+    """A side receives every message up to 1 MiB, one of exactly 1 MiB included (Messages,
+    Sizes, since 3.3): uvicorn's limit counts as the protocol does, in one frame or several.
+    The cloud declines compression, with which websockets refuses some messages of 1 MiB."""
+    _, _, device = await registered(cloud)
+    random = Random(3)
+    access_token = await token(cloud, device)
+    async with served(cloud) as url, linked(url, access_token, compression=compression) as link:
+        assert link.ws.protocol.extensions == []
+        await link.open()
+        for pad in ("x" * MAX_MESSAGE, "".join(random.choices(ascii_letters, k=MAX_MESSAGE))):
+            text = _ping(MAX_MESSAGE, pad)
+            await link.say(text)
+            assert await link.hear() == {"type": "pong", "received": 0}
+            # websockets sends what it is given in pieces as one message, in fragments.
+            await link.ws.send([text[n : n + 4096] for n in range(0, len(text), 4096)])
+            assert await link.hear() == {"type": "pong", "received": 0}
+        await link.say(_ping(MAX_MESSAGE + 1, pad))
+        assert await link.ended() == 1009
+
+
+def _ping(size: int, pad: str) -> str:
+    """A ping of ``size`` bytes of UTF-8, with a field of ``pad``'s ASCII that the schema
+    allows."""
+    bare = json.dumps({"type": "ping", "received": 0, "pad": ""})
+    text = bare[:-2] + pad[: size - len(bare)] + bare[-2:]
+    assert len(text.encode()) == size
+    return text
+
+
 async def _ended_as(caplog: pytest.LogCaptureFixture, ended: list[str]) -> bool:
     return [
         each.ended  # type: ignore[attr-defined]
@@ -465,7 +506,7 @@ async def test_a_device_that_leaves_its_home_is_removed_then_told(cloud) -> None
     access_token = await token(cloud, device)
     async with served(cloud) as url:
         async with linked(url, access_token) as link:
-            assert (await link.open())["protocol"] == "3.2"
+            assert (await link.open())["protocol"] == "3.3"
             await link.say({"type": "leave", "seq": 1})
             assert await link.hear() == {"type": "bye", "reason": "left"}
             assert await link.ended() == 1000

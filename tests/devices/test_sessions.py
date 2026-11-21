@@ -16,7 +16,7 @@ import pytest
 from link import DEEP, hello
 
 from ai_cloud.devices.domain.errors import Unavailable
-from ai_cloud.devices.domain.link import Closed
+from ai_cloud.devices.domain.link import NOT_FIRST, Closed
 from ai_cloud.devices.domain.model import Description, Device, Opening, TokenHolder
 from ai_cloud.devices.service.links import RECONNECT, Links
 from ai_cloud.devices.settings import LinkSettings
@@ -75,12 +75,14 @@ async def nothing() -> None:
 
 class Store:
     """The registry: the devices it holds, under their registration, in ``HOME``. As a change
-    elsewhere would, ``describing`` runs while a hello is kept, and ``removing`` as a device
-    is removed, before the registry holds it no more."""
+    elsewhere would, ``describing`` runs while a hello is kept, ``holding`` while a home's
+    lock is waited for, and ``removing`` as a device is removed, before the registry holds it
+    no more."""
 
     def __init__(self) -> None:
         self.held: dict[UUID, datetime] = {}
         self.describing: Callable[[], None] = lambda: None
+        self.holding: Callable[[], Awaitable[None]] = nothing
         self.removing: Callable[[], Awaitable[None]] = nothing
         self.homes_held: list[UUID] = []
 
@@ -96,6 +98,7 @@ class Store:
         return {each: self.held[each] for each in device_ids if each in self.held}
 
     async def hold_home(self, home_id: UUID) -> None:
+        await self.holding()
         self.homes_held.append(home_id)
 
     async def device(self, device_id: UUID) -> Device | None:
@@ -472,7 +475,26 @@ async def test_a_first_message_that_is_no_hello_is_told(first: dict[str, Any]) -
     channel = Channel()
     serving = asyncio.create_task(links(store).serve(channel, held(store)))  # type: ignore[arg-type]
     channel.say(first)
-    assert await channel.hear() == {"type": "bye", "reason": "no_hello"}
+    # Said at once, without waiting for hello_timeout (hello, since 3.3).
+    async with asyncio.timeout(1):
+        said = await channel.hear()
+    assert said == {"type": "bye", "reason": "no_hello", "message": NOT_FIRST}
+    await serving
+    assert channel.closed == 1000
+
+
+async def test_the_first_message_example_runs_as_it_says() -> None:
+    """The cloud link's example of a first message that is not a hello (hello, since 3.3)."""
+    example = json.loads(
+        (platform_dir() / "cloud" / "examples" / "first-message.json").read_text(encoding="utf-8")
+    )
+    store = Store()
+    channel = Channel()
+    serving = asyncio.create_task(links(store).serve(channel, held(store)))  # type: ignore[arg-type]
+    steps = [step for step in example["messages"] if "from" in step]
+    assert [step["from"] for step in steps] == ["device", "cloud"]
+    channel.say(steps[0]["message"])
+    assert await channel.hear() == steps[1]["message"]
     await serving
     assert channel.closed == 1000
 
@@ -690,7 +712,12 @@ async def test_a_leave_ends_its_session_with_left_though_its_hint_comes_first() 
 
 @pytest.mark.parametrize(
     "meanwhile",
-    ["removed in the app", "registered again", "gone with its home"],
+    [
+        "removed in the app",
+        "registered again",
+        "registered again as the leave waits for its home",
+        "gone with its home",
+    ],
 )
 async def test_a_device_removed_meanwhile_is_told_revoked(meanwhile: str) -> None:
     """A removal in the app, or the home's deletion, came before the leave's: the device is
@@ -710,6 +737,14 @@ async def test_a_device_removed_meanwhile_is_told_revoked(meanwhile: str) -> Non
         del store.held[opening.device_id]
     elif meanwhile == "registered again":
         store.held[opening.device_id] = datetime(2026, 11, 12, tzinfo=UTC)
+    elif meanwhile == "registered again as the leave waits for its home":
+        # A removal and a registration, in the app, which held the home first: the leave
+        # reads the device only once it holds the home, and finds another registration.
+
+        async def registered() -> None:
+            store.held[opening.device_id] = datetime(2026, 11, 12, tzinfo=UTC)
+
+        store.holding = registered
     else:
 
         async def deleted() -> None:
@@ -721,7 +756,7 @@ async def test_a_device_removed_meanwhile_is_told_revoked(meanwhile: str) -> Non
     await serving
     # Its removal was another's, and so was its hint.
     assert hinted == []
-    if meanwhile == "registered again":
+    if meanwhile.startswith("registered again"):
         assert store.held[opening.device_id] == datetime(2026, 11, 12, tzinfo=UTC)
 
 

@@ -141,6 +141,13 @@ def server_config(app: FastAPI, settings: CloudSettings, **changes: Any) -> uvic
             # A control channel's message has 1 MiB at most: uvicorn closes the connection
             # over a larger one, with 1009 (the cloud link, Messages).
             "ws_max_size": MAX_MESSAGE,
+            # Compression would refuse some messages of 1 MiB, which the cloud link's every
+            # side receives (Sizes, since 3.3): websockets 17.3 compares a compressed frame's
+            # length with what the message may still hold once decompressed (frames.py,
+            # protocol.py), so a last fragment of one byte after 1 MiB fails. It also costs
+            # memory on every connection. RFC 7692 lets a server decline it, and the robot
+            # offers none; Node's ws declines it by default (its README, read 2026-11-21).
+            "ws_per_message_deflate": False,
             # The cloud link pings with messages of its own (Staying connected), which a proxy
             # in between cannot answer for the device, as it may WebSocket's.
             "ws_ping_interval": None,

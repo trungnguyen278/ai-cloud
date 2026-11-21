@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """A device's control channel on a WebSocket (RFC 6455), as Starlette serves one: the cloud
-link 3.2's transport (platform/protocols/cloud/README.md, The control channel)."""
+link 3.3's transport (platform/protocols/cloud/README.md, The control channel)."""
 
 import contextlib
 
