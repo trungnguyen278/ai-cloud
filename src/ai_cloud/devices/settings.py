@@ -33,6 +33,16 @@ class LinkSettings(Settings):
     rate: Annotated[float, Field(gt=0)]
     burst: Annotated[int, Field(ge=1)]
     backlog: Annotated[int, Field(ge=1)]
+    # And the characters of their text, a second, in bursts of up to text_burst: what reading
+    # them costs grows with them. A message longer than the burst waits for a full one. Both
+    # count for the device on the replica, however many connections it holds there.
+    text_rate: Annotated[float, Field(gt=0)]
+    text_burst: Annotated[int, Field(ge=1)]
+    # Connections a replica takes a second from all devices together, in bursts of up to
+    # connect_burst, counted once a token verifies and its device's own rate lets it through;
+    # past them it answers 503, with when to try again.
+    connect_rate: Annotated[float, Field(gt=0)]
+    connect_burst: Annotated[int, Field(ge=1)]
     # Seconds between two checks of a replica's connections against the registry and the
     # presence, and between two tries to hear hints after Redis failed: the longest that a
     # lost hint delays a bye.
@@ -40,7 +50,8 @@ class LinkSettings(Settings):
     # Seconds a connection's presence lasts unless the replica that holds it keeps it: longer
     # than check_interval.
     presence_ttl: Annotated[float, Field(gt=0)]
-    # Seconds the cloud waits, when it goes away, for its last messages to leave.
+    # Seconds a session waits, as it ends, for its last messages and its close to leave: as
+    # when the cloud goes away.
     close_timeout: Annotated[float, Field(gt=0)]
 
     @model_validator(mode="after")
@@ -65,5 +76,7 @@ class DevicesSettings(Settings):
     access_lifetime: Annotated[int, Field(ge=1, le=_TOKEN_RESPONSE_MAX)]
     # How many tokens one address may ask for (SEC-15).
     token_rate: AddressRateSettings
+    # How often one device may open its control channel (SEC-15).
+    connection_rate: RateSettings
     # Their control channels.
     link: LinkSettings

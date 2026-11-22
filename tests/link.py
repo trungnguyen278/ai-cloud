@@ -25,9 +25,9 @@ DEEP = "[" * 500_000 + "]" * 500_000
 
 
 @asynccontextmanager
-async def served(cloud: Cloud) -> AsyncIterator[str]:
-    """Serve ``cloud``'s api on a port of this machine; the control channel's URL there. The
-    server goes away when the block ends, as a process told to stop does."""
+async def running(cloud: Cloud) -> AsyncIterator[ApiServer]:
+    """Serve ``cloud``'s api on a port of this machine. The server goes away when the block
+    ends, as a process told to stop does."""
     config = server_config(cloud.app, cloud.settings, host="127.0.0.1", port=0, lifespan="off")
     server = ApiServer(config, cloud.app.state.going_away)
     serving = asyncio.create_task(server.serve())
@@ -35,19 +35,34 @@ async def served(cloud: Cloud) -> AsyncIterator[str]:
         while not server.started:
             assert not serving.done(), "the server stopped"
             await asyncio.sleep(0.01)
-    port = server.servers[0].sockets[0].getsockname()[1]
     try:
-        yield f"ws://127.0.0.1:{port}{PATH}"
+        yield server
     finally:
         server.should_exit = True
         await serving
+
+
+@asynccontextmanager
+async def served(cloud: Cloud) -> AsyncIterator[str]:
+    """Serve ``cloud``'s api, as ``running`` does; the control channel's URL there."""
+    async with running(cloud) as server:
+        yield url(server)
+
+
+def url(server: ApiServer) -> str:
+    """The control channel's URL at ``server``."""
+    return f"ws://127.0.0.1:{port(server)}{PATH}"
+
+
+def port(server: ApiServer) -> int:
+    return server.servers[0].sockets[0].getsockname()[1]
 
 
 def hello(**changes: Any) -> dict[str, Any]:
     """A robot's hello, as the cloud link's example has it."""
     return {
         "type": "hello",
-        "protocol": "3.3",
+        "protocol": "3.4",
         "device": {"kind": "robot", "model": "concept-v0", "software": "0.4.0"},
         "time": "2026-10-28T03:20:00.250Z",
         "time_zone": "Asia/Ho_Chi_Minh",

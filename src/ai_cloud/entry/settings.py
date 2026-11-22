@@ -26,12 +26,16 @@ class ApiSettings(Settings):
     host: str
     # Its TCP port.
     port: Annotated[int, Field(ge=1, le=65535)]
-    # Whether it logs each request.
+    # Whether it logs each request: each WebSocket handshake too, and each request that it
+    # cannot parse or upgrade.
     access_log: bool
     # The addresses or networks of the proxies whose X-Forwarded-For names the client
     # (uvicorn's forwarded_allow_ips): the reverse proxy in front of the api. Rate limits
     # count by the address they give.
     forwarded_allow_ips: list[str]
+    # Seconds a WebSocket connection may take to close, for its peer's close frame, then for
+    # what it has not read, before the process cuts it (SEC-15).
+    ws_close_timeout: Annotated[float, Field(gt=0)]
     # Seconds the process waits, as it stops, for its requests and connections to end once
     # its devices were asked to connect again, before it cancels what is left (uvicorn's
     # timeout_graceful_shutdown, whole seconds).

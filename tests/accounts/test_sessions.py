@@ -9,6 +9,7 @@ import uuid
 import pytest
 from app_api import CLIENT, bearer, conforms, oauth_error, problem
 
+from ai_cloud.accounts.domain.errors import RateLimited
 from ai_cloud.accounts.domain.model import token_hash
 from ai_cloud.accounts.service import ACCESS_TOKEN_TYPE, APP_AUDIENCE
 
@@ -356,3 +357,7 @@ async def test_a_session_of_another_account_cannot_be_ended(cloud) -> None:
         )
         problem(response, 404)
     assert (await cloud.refresh(theirs["refresh_token"])).status_code == 200
+
+
+def test_a_wait_is_told_in_whole_seconds_none_of_them_early() -> None:
+    assert str(RateLimited(0.2)) == "over the rate: retry after 1 s"

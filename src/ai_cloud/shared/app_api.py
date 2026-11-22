@@ -117,7 +117,12 @@ def problem_of(error: Exception, typed: TypedProblems, statuses: StatusProblems)
 
 def over_the_rate(retry_after: float, detail: str) -> Problem:
     """What a request over a limit gets: 429, and when to try again (the app API, Errors)."""
-    return Problem(429, detail, headers={"Retry-After": str(math.ceil(retry_after))})
+    return Problem(429, detail, headers=retry_after_header(retry_after))
+
+
+def retry_after_header(seconds: float) -> dict[str, str]:
+    """``Retry-After`` in whole seconds (RFC 9110, 10.2.3), none of them early."""
+    return {"Retry-After": str(math.ceil(seconds))}
 
 
 def bearer_token(request: Request) -> str:

@@ -10,7 +10,6 @@ as Problem Details, whose status the device acts on.
 """
 
 import logging
-import math
 from collections.abc import Awaitable
 from typing import Annotated, Any
 from uuid import UUID
@@ -38,6 +37,7 @@ from ai_cloud.shared.app_api import (
     over_the_rate,
     page_request,
     problem_of,
+    retry_after_header,
 )
 from ai_cloud.shared.oauth import CHALLENGE, OAuthError, bearer, form
 from ai_cloud.shared.problems import MEDIA_TYPE, Problem
@@ -170,19 +170,28 @@ def router(service: DevicesService, tokens: DeviceTokens, links: Links) -> APIRo
     @routes.websocket(link.PATH)
     async def control_channel(websocket: WebSocket) -> None:
         token = bearer(websocket.headers)
+        # No refusal is logged: anyone may try, as often as the edge lets them, and a flood
+        # would write a line for each (ADR-0012). The access log has them, once it is on.
         try:
-            if token is None:
-                raise errors.Unauthenticated("a bearer access token is needed")
             opening = await links.open(token)
         except errors.Unauthenticated as error:
             # The device gets a new token, and connects again after its backoff.
-            log.info("a device's connection was refused", extra={"reason": str(error)})
             refusal = Problem(401, str(error), headers=CHALLENGE)
+            await websocket.send_denial_response(refusal.response())
+            return
+        except errors.RateLimited as error:
+            refusal = over_the_rate(error.retry_after, str(error))
             await websocket.send_denial_response(refusal.response())
             return
         except errors.Unavailable as error:
             # The device connects again after its backoff, to another replica.
-            await websocket.send_denial_response(Problem(503, str(error)).response())
+            await websocket.send_denial_response(_unavailable(error).response())
+            return
+        except Exception:
+            # As the API answers a failure of its own (shared.problems): only an attempt whose
+            # token verified gets this far, within its device's rate.
+            log.exception("a device's connection could not be opened")
+            await websocket.send_denial_response(Problem(500).response())
             return
         await websocket.accept()
         await links.serve(WebSocketChannel(websocket), opening)
@@ -204,18 +213,24 @@ def _problem(error: errors.DevicesError) -> Problem:
     return problem_of(error, _TYPED, _STATUSES)
 
 
+def _unavailable(error: errors.Unavailable) -> Problem:
+    if error.retry_after is None:
+        return Problem(503, str(error))
+    return Problem(503, str(error), headers=retry_after_header(error.retry_after))
+
+
 def _refused(error: errors.DevicesError) -> OAuthError:
     """How the token endpoint answers a device it refuses: ``invalid_client`` only for a key it
     does not hold, after which the device offers set-up, or erases itself if it was leaving
     its home before a factory reset (leave); ``invalid_grant`` for an assertion of a key it
     holds that fails, as RFC 6749 answers a grant that is invalid (5.2), not RFC 7523's
     ``invalid_client``, after which a clock far off would unbind a device. It tries again
-    after its backoff after any refusal but the first (the cloud link 3.3, Tokens from the
+    after its backoff after any refusal but the first (the cloud link 3.4, Tokens from the
     server)."""
     match error:
         case errors.RateLimited():
             # Not logged: a flood would fill the logs.
-            retry = {"Retry-After": str(math.ceil(error.retry_after))}
+            retry = retry_after_header(error.retry_after)
             return OAuthError("temporarily_unavailable", str(error), 429, headers=retry)
         case errors.UnknownDevice():
             refused = OAuthError("invalid_client", str(error), 401)

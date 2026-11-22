@@ -10,6 +10,7 @@ dependencies = [
     { name = "alembic" },
     { name = "asyncpg" },
     { name = "fastapi" },
+    { name = "httptools" },
     { name = "httpx2" },
     { name = "jsonschema" },
     { name = "pydantic" },
@@ -18,6 +19,7 @@ dependencies = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tzdata" },
     { name = "uvicorn", extra = ["standard"] },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -27,7 +29,6 @@ dev = [
     { name = "pyyaml" },
     { name = "ruff" },
     { name = "testcontainers" },
-    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -35,6 +36,7 @@ requires-dist = [
     { name = "alembic", specifier = ">=1.20.1,<2" },
     { name = "asyncpg", specifier = ">=0.32,<1" },
     { name = "fastapi", specifier = ">=0.162,<1" },
+    { name = "httptools", specifier = ">=0.9,<1" },
     { name = "httpx2", specifier = ">=2.16,<3" },
     { name = "jsonschema", specifier = ">=4.26,<5" },
     { name = "pydantic", specifier = ">=2.14,<3" },
@@ -43,6 +45,7 @@ requires-dist = [
     { name = "sqlalchemy", extras = ["asyncio"], specifier = ">=2.1.6,<2.2" },
     { name = "tzdata", specifier = ">=2026.6" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54,<1" },
+    { name = "websockets", specifier = ">=17.3,<18" },
 ]
 
 [package.metadata.requires-dev]
@@ -52,7 +55,6 @@ dev = [
     { name = "pyyaml", specifier = ">=6.0.3,<7" },
     { name = "ruff", specifier = ">=0.17,<0.18" },
     { name = "testcontainers", specifier = ">=4.15,<5" },
-    { name = "websockets", specifier = ">=17.3,<18" },
 ]
 
 [[package]]

@@ -7,13 +7,16 @@ crosses to a device or an app is defined by ai-platform's schemas, not by this c
 """
 
 import asyncio
+import functools
 import logging
 import socket
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any, Self
 
+import httptools
 import httpx2
 import uvicorn
 from fastapi import FastAPI
@@ -21,6 +24,7 @@ from fastapi import FastAPI
 from ai_cloud.accounts.api import Accounts
 from ai_cloud.devices.api import MAX_MESSAGE, Devices
 from ai_cloud.entry.settings import CloudSettings
+from ai_cloud.entry.websocket import WebSocketProtocol
 from ai_cloud.shared import problems
 from ai_cloud.shared.app_api import MAX_BODY
 from ai_cloud.shared.database import DATABASE_URL_ENV, create_engine, database_url
@@ -130,9 +134,78 @@ class ApiServer(uvicorn.Server):
         await super().shutdown(sockets)
 
 
+class ApiConfig(uvicorn.Config):
+    """uvicorn's settings, whose ``access_log`` also holds the other lines written for each
+    request, which anyone can make. uvicorn 0.54 writes them to ``uvicorn.error`` whatever
+    ``access_log`` says, where it mutes the access log of HTTP (its config.py): a WebSocket
+    handshake's, ``"WebSocket /device/v3/link" 401`` say, at INFO, and websockets' beside it,
+    ``connection rejected (401 Unauthorized)``; and a warning for a request it cannot parse
+    or upgrade. A flood would write lines for each
+    (docs/decisions/0012-what-one-device-can-exhaust.md)."""
+
+    def configure_logging(self) -> None:
+        super().configure_logging()
+        _REQUEST_LINES.dropped = not self.access_log
+        logging.getLogger("uvicorn.error").addFilter(_REQUEST_LINES)
+
+
+class _RequestLines(logging.Filter):
+    """Drops the lines written for each request, unless the access log holds them: a
+    WebSocket handshake's accepted or refused, and a request's that cannot be served. nginx
+    logs the latter, "client sent invalid request", at its info level, below its default (its
+    ngx_http_request.c and ngx_log.c, read 2026-11-22), and in its access log.
+
+    A request that uvicorn's own code failed to parse is no peer's error, though uvicorn 0.54
+    logs it as one: httptools gives an exception raised in one of uvicorn's callbacks as the
+    parser's error, ``HttpParserCallbackError``, with the exception as its context (its
+    parser.pyx, 0.9.0). That line is kept whatever the access log, with the exception, as
+    Python's logging lets a filter change a record (Filter.filter, read 2026-11-22); but not
+    where the exception is httptools' own over the request, which uvicorn's callback meets as
+    it parses the URL, a port past 65,535 among them (tried 2026-11-22): that one is a peer's."""
+
+    # How each of uvicorn's WebSocket protocols begins its line.
+    HANDSHAKE = '%s - "WebSocket %s" '
+    # uvicorn's, as its HTTP protocols answer 400 (uvicorn 0.54, httptools_impl.py and
+    # h11_impl.py).
+    INVALID = "Invalid HTTP request received."
+    LINES = frozenset(
+        {
+            # websockets', as its ServerProtocol sends its response (websockets 17.3, server.py).
+            "connection open",
+            "connection rejected (%d %s)",
+            "HTTP response sent (%d %s)",
+            INVALID,
+            # uvicorn's, as its HTTP protocols serve no upgrade.
+            "Unsupported upgrade request.",
+        }
+    )
+
+    def __init__(self) -> None:
+        super().__init__()
+        # Whether the lines written for each request are dropped.
+        self.dropped = True
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        line = record.msg
+        if not isinstance(line, str):
+            return True
+        if line == self.INVALID:
+            # Logged as uvicorn handles the parser's error.
+            failed = sys.exc_info()[1]
+            if isinstance(failed, httptools.HttpParserCallbackError) and not isinstance(
+                failed.__context__, httptools.HttpParserError
+            ):
+                record.exc_info = (type(failed), failed, failed.__traceback__)
+                return True
+        return not (self.dropped and (line.startswith(self.HANDSHAKE) or line in self.LINES))
+
+
+_REQUEST_LINES = _RequestLines()
+
+
 def server_config(app: FastAPI, settings: CloudSettings, **changes: Any) -> uvicorn.Config:
     """How uvicorn serves ``app``, with ``changes`` to uvicorn's own settings."""
-    return uvicorn.Config(
+    return ApiConfig(
         app,
         **{
             "host": settings.api.host,
@@ -153,6 +226,15 @@ def server_config(app: FastAPI, settings: CloudSettings, **changes: Any) -> uvic
             # The cloud link pings with messages of its own (Staying connected), which a proxy
             # in between cannot answer for the device, as it may WebSocket's.
             "ws_ping_interval": None,
+            # uvicorn's own protocol, but for the frames below the application that a
+            # connection may send, whose Pings the link's ping_interval sets (Frames,
+            # since 3.4), and that a connection closed ends within ws_close_timeout: a
+            # device that reads nothing would hold its own open.
+            "ws": functools.partial(
+                WebSocketProtocol,
+                close_timeout=settings.api.ws_close_timeout,
+                link_ping_interval=settings.devices.link.ping_interval,
+            ),
             # uvicorn waits for every connection to close, without a bound by default: a
             # device that reads nothing never lets its own close.
             "timeout_graceful_shutdown": settings.api.shutdown_timeout,

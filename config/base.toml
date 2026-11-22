@@ -11,17 +11,24 @@
 host = "127.0.0.1"
 # Its port, behind the reverse proxy.
 port = 8000
-# Whether it logs each request. The reverse proxy logs them already.
+# Whether it logs each request: each WebSocket handshake too, and each request that it
+# cannot parse or upgrade, which anyone can send (docs/decisions/0012). The reverse proxy
+# logs them already.
 access_log = false
 # The proxies whose X-Forwarded-For names the client: the reverse proxy in front of the
 # api, by address or network. Rate limits count by the address it gives, so it must be
 # listed, or every request would count as the proxy's own.
 forwarded_allow_ips = ["127.0.0.1", "::1"]
+# Seconds a WebSocket connection may take to close: first for the device's close frame, then
+# for what it has not read, before the api cuts it (docs/decisions/0012). uvicorn would wait
+# for ever for a device that reads nothing, and 10 s for a close frame; a device that reads
+# sends its own within a round trip.
+ws_close_timeout = 2
 # Seconds the api waits, as it stops, for its requests and connections to end once its
-# devices were asked to connect again, before it cancels what is left. Without a bound, a
-# device that reads nothing would hold the stop without end: its connection never closes.
-# After [devices.link] close_timeout, it leaves room within the 10 s that Docker Compose
-# waits for a container to stop before it kills it (stop_grace_period).
+# devices were asked to connect again, before it cancels what is left, such as a request
+# that hangs. After [devices.link] close_timeout, it leaves room within the 10 s that Docker
+# Compose waits for a container to stop before it kills it (stop_grace_period), and a
+# connection that the stop closes is cut within ws_close_timeout.
 shutdown_timeout = 3
 
 [logging]
@@ -203,6 +210,14 @@ period = 60
 # The prefix by which IPv6 addresses count: one host is commonly given a whole /64.
 ipv6_prefix = 64
 
+[devices.connection_rate]
+# How often one device may open its control channel: 10 times at once, then once every 6 s,
+# past which it gets 429 and when to try again (docs/decisions/0012). Its backoff, a new
+# token and a replica that goes away make a few in a row. AWS IoT Core takes one connection
+# a second from each client, in no burst (its quotas, read 2026-11-21).
+limit = 10
+period = 60
+
 [devices.link]
 # The devices' control channels (the cloud link's Settings, and
 # docs/decisions/0011-control-channels.md).
@@ -211,7 +226,8 @@ ipv6_prefix = 64
 hello_timeout = 5
 # Seconds between a device's pings, which the cloud's hello gives: the cloud link's starting
 # point. The cloud closes a connection from which nothing has come for two of them, or to
-# which nothing could be sent for as long.
+# which nothing could be sent for as long. A connection may send twice as many of
+# WebSocket's Pings at once, and one a second (the cloud link's Frames, since 3.4).
 ping_interval = 20
 # What the cloud takes from a device: 50 messages a second, in bursts of 100, and 500 more
 # waiting their turn. The cloud link's starting points for what a device takes from the
@@ -219,11 +235,29 @@ ping_interval = 20
 rate = 50
 burst = 100
 backlog = 500
+# And 256 KiB of their text a second, in bursts of 1 MiB, the largest message. Both count for
+# the device, however many connections it holds on the replica, and its hello with its
+# messages. Reading a MiB costs the replica's event loop up to some 190 ms, by its shape
+# (measured 2026-11-21), so a device that sends all it may holds about a twentieth of it.
+# AWS IoT Core delays what passes 512 KB a second on a connection; EMQX's example takes
+# 1 MB a second from a client.
+text_rate = 262144
+text_burst = 1048576
+# Connections a replica takes a second from all devices together, in bursts of 200, past
+# which it answers 503 and when to try again. Counted once a token verifies and its device's
+# own rate lets it through, so that no host without a valid token spends them: they bound a
+# storm of real devices, as when all return after a replica restarts. As many as Azure IoT
+# Hub's smallest unit takes at least (S1, 100 a second), in bursts of twice the rate, as
+# HiveMQ's.
+connect_rate = 100
+connect_burst = 200
 # Seconds between two checks of a replica's connections against the registry and the
 # presence: the longest that a lost hint delays the bye of a device removed or replaced.
 check_interval = 20
 # Seconds a connection's presence lasts unless its replica keeps it, as Centrifugo's
 # presence_ttl: three checks, so that one late or failed check loses nothing.
 presence_ttl = 60
-# Seconds the cloud waits, when it goes away, for each connection's reconnect to leave.
+# Seconds a session waits, as it ends, for its last message and its close to leave: as when
+# the cloud goes away, for each connection's reconnect. A device that reads nothing is then
+# cut within twice [api] ws_close_timeout.
 close_timeout = 5

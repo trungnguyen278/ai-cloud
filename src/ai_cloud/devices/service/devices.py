@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The devices' use cases: challenges, registrations, a home's devices and their names, the
 devices' access tokens, and what goes when a home or an account does (ai-platform ADR-0012 and
-ADR-0013, its app API 1.7, and the cloud link 3.3). A device removed, or gone with its home,
+ADR-0013, its app API 1.7, and the cloud link 3.4). A device removed, or gone with its home,
 is hinted at, so that its control channel ends (docs/decisions/0011-control-channels.md); one
 that leaves its home is removed as here by its own control channel (links.py).
 

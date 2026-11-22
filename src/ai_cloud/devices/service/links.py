@@ -1,13 +1,15 @@
 # SPDX-License-Identifier: MIT
 """The devices' control channels: each connection's session, from the device's hello to its
-end, and what a replica of the api does for the sessions it holds (the cloud link 3.3,
+end, and what a replica of the api does for the sessions it holds (the cloud link 3.4,
 platform/protocols/cloud/README.md; docs/decisions/0011-control-channels.md).
 
 A connection opens once the device's access token verifies and the registry holds the
-device. Its session starts with the two hellos: the device's says what it is, which the
-registry keeps, and the connection becomes the device's newest in the presence, which every
-replica reads. A session then ends with a ``bye``, from either side, or when its connection
-is lost or falls silent.
+device, within what a replica takes from all devices and what it takes from each
+(docs/decisions/0012-what-one-device-can-exhaust.md): an attempt without a valid token
+spends none of it. Its session starts with the two
+hellos: the device's says what it is, which the registry keeps, and the connection becomes
+the device's newest in the presence, which every replica reads. A session then ends with a
+``bye``, from either side, or when its connection is lost or falls silent.
 
 Whatever may end a session elsewhere, the device's removal, its home's deletion or a newer
 connection, sends a hint that reaches every replica, at most once. A replica checks the
@@ -22,7 +24,6 @@ ADR-0015). The hint that the removal sends ends the device's other connections, 
 import asyncio
 import contextlib
 import logging
-import time
 import uuid
 from collections.abc import Collection, Coroutine
 from datetime import UTC, datetime
@@ -30,7 +31,7 @@ from typing import Any
 from uuid import UUID
 
 from ai_cloud.devices.domain import link
-from ai_cloud.devices.domain.errors import Unauthenticated, Unavailable
+from ai_cloud.devices.domain.errors import RateLimited, Unauthenticated, Unavailable
 from ai_cloud.devices.domain.link import (
     Bye,
     Close,
@@ -46,6 +47,7 @@ from ai_cloud.devices.ports import Channel, Hints, Presence, Store
 from ai_cloud.devices.service.devices import DeviceTokens, hint
 from ai_cloud.devices.settings import LinkSettings
 from ai_cloud.shared.protocols import Schema, protocol_schema
+from ai_cloud.shared.rates import RateLimiter, RatesUnavailable, TokenBucket
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +58,8 @@ TOO_BIG = "too_big"  # a message too large closed the connection, as invalid_mes
 DEVICE_BYE = "bye"  # the device ended the session
 SILENT = "silent"  # nothing came for two ping intervals
 STALLED = "stalled"  # nothing the cloud sent could leave for two ping intervals
+FLOODED = "flooded"  # frames below the session broke the link's rules for them, and closed it
+INVALID_TEXT = "invalid_text"  # text that was no UTF-8 closed the connection
 
 
 class Links:
@@ -70,6 +74,7 @@ class Links:
         store: Store,
         presence: Presence,
         hints: Hints,
+        connection_rate: RateLimiter,
     ) -> None:
         self.settings = settings
         self.schema: Schema = protocol_schema(link.PROTOCOL, "from_device")
@@ -78,22 +83,44 @@ class Links:
         self._store = store
         self._presence = presence
         self._hints = hints
+        self._connection_rate = connection_rate
+        # Connections this replica takes, from all devices together.
+        self._connections = TokenBucket(settings.connect_rate, settings.connect_burst)
         # The sessions held here, by device: one, or two while a newer one replaces another.
         self._sessions: dict[UUID, set[Session]] = {}
+        # What this replica takes from each device, kept until it is whole again.
+        self._budgets: dict[UUID, Budget] = {}
         self._checks: set[asyncio.Task[None]] = set()
         self._stopping = False
         # Set while no session is held here, its presence forgotten.
         self._drained = asyncio.Event()
         self._drained.set()
 
-    async def open(self, access_token: str) -> Opening:
+    async def open(self, access_token: str | None) -> Opening:
         """A connection for the device whose access token this is, if the registry still
         holds it under the registration that the token was issued for. ``Unauthenticated``
-        otherwise; ``Unavailable`` once this replica goes away, also while the registry was
-        read."""
+        otherwise; ``RateLimited`` while the device connects too often; ``Unavailable`` once
+        this replica goes away, also while the registry was read, while the device's count
+        cannot be read, and with when to try again while it takes no more connections.
+
+        The token's signature comes first, which needs no I/O: what the cloud counts, an
+        attempt without a valid token never spends, so that no flood of them refuses a
+        device. The device's own count comes before the replica's, which a device past its
+        own then spends neither (ADR-0012)."""
         if self._stopping:
             raise Unavailable("this replica is going away")
+        if access_token is None:
+            raise Unauthenticated("a bearer access token is needed")
         holder = self._tokens.authenticate(access_token)
+        try:
+            wait = await self._connection_rate.wait(str(holder.device_id))
+        except RatesUnavailable:
+            raise Unavailable("the cloud cannot count connections now") from None
+        if wait > 0:
+            raise RateLimited(wait)
+        wait = self._connections.take_now()
+        if wait > 0:
+            raise Unavailable("the cloud takes no more connections for now", wait)
         async with self._store.transaction() as store:
             device = await store.device(holder.device_id)
         if device is None:
@@ -171,6 +198,14 @@ class Links:
             await hint(self._hints, [session.device_id])
         return removed
 
+    def budget(self, device_id: UUID) -> Budget:
+        """What this replica takes from ``device_id``, which its sessions here share: one
+        that connects again finds it as its last connection left it."""
+        budget = self._budgets.get(device_id)
+        if budget is None:
+            budget = self._budgets[device_id] = Budget(self.settings)
+        return budget
+
     async def run(self, stop: asyncio.Event) -> None:
         """Hear the hints, and check the connections held here every ``check_interval``,
         until ``stop`` is set. Then wait, up to ``close_timeout``, for the sessions still
@@ -223,10 +258,18 @@ class Links:
     async def _check_every(self) -> None:
         while True:
             await asyncio.sleep(self.settings.check_interval)
+            self._sweep()
             try:
                 await self._check(self._held())
             except Exception:
                 log.warning("the control channels could not be checked", exc_info=True)
+
+    def _sweep(self) -> None:
+        """Forget the budgets of the devices that hold no session here, once they are whole:
+        a new one would be the same."""
+        for device_id, budget in list(self._budgets.items()):
+            if device_id not in self._sessions and budget.full():
+                del self._budgets[device_id]
 
     async def _check(self, sessions: Collection[Session]) -> None:
         """End those of ``sessions`` whose device the registry no longer holds under the
@@ -285,9 +328,11 @@ class Session:
     Three tasks carry it once open, as the robot's do on its side: one reads, at the rate the
     cloud takes, numbers each message, answers pings at once and queues the rest; one handles
     what is queued; one writes, in order, what the session sends. The rate counts every
-    message, pings included, before it is read; up to the backlog wait their turn, past which
-    the cloud drops what comes. A device that takes nothing for two ping intervals seems gone,
-    as one that sends nothing does: what waits for it is then bounded by the rate.
+    message, the hello and pings included, and the characters of its text, before it is
+    read: reading costs as much as the text is long. It is the device's, which its sessions
+    on this replica share. Up to the backlog wait their turn, past which the cloud drops what
+    comes. A device that takes nothing for two ping intervals seems gone, as one that sends
+    nothing does: what waits for it is then bounded by the rate.
     """
 
     def __init__(self, links: Links, channel: Channel, opening: Opening) -> None:
@@ -318,7 +363,7 @@ class Session:
         self._inbox: asyncio.Queue[tuple[int, dict[str, Any]]] = asyncio.Queue(
             maxsize=self._settings.backlog
         )
-        self._bucket = Bucket(self._settings.rate, self._settings.burst)
+        self._budget = links.budget(self.device_id)
         self._dropping = False
         self._noted: set[str] = set()
 
@@ -349,22 +394,34 @@ class Session:
         log.exception(
             "a device's session failed", extra={"device": str(self.device_id), **self.about()}
         )
-        # Within close_timeout, as any close: the connection may be what failed, or its
-        # device may read nothing.
-        with contextlib.suppress(Exception):
-            async with asyncio.timeout(self._settings.close_timeout):
-                await self._channel.send(link.encode(link.bye(Bye.ERROR)))
-        with contextlib.suppress(Exception):
-            async with asyncio.timeout(self._settings.close_timeout):
-                await self._channel.close(Close.INTERNAL)
+        # The connection may be what failed.
+        await self._close(Close.INTERNAL, link.bye(Bye.ERROR), failed=True)
         return str(Bye.ERROR)
+
+    async def _close(
+        self, close: Close, bye: dict[str, Any] | None = None, *, failed: bool = False
+    ) -> None:
+        """Close the connection, after ``bye`` if there is one, within one ``close_timeout``
+        for both, as every end of a session does: a device that reads nothing holds neither
+        longer, and uvicorn cuts its connection once the application returns (ADR-0012).
+        After the cloud's own failure, ``failed``, the close is tried whatever the ``bye``
+        met."""
+        deadline = asyncio.get_running_loop().time() + self._settings.close_timeout
+        missed = Exception if failed else TimeoutError
+        if bye is not None:
+            with contextlib.suppress(missed):
+                async with asyncio.timeout_at(deadline):
+                    await self._channel.send(link.encode(bye))
+        with contextlib.suppress(missed):
+            async with asyncio.timeout_at(deadline):
+                await self._channel.close(close)
 
     async def _run(self) -> str:
         first = await self._first()
         if isinstance(first, str):
             return first
         if first.type == "bye":
-            await self._channel.close(Close.NORMAL)
+            await self._close(Close.NORMAL)
             return DEVICE_BYE
         hello = link.read_hello(first, self._links.schema)
         if isinstance(hello, Bye):
@@ -381,7 +438,7 @@ class Session:
         self.hello = hello
         self.id = uuid.uuid7()
         if self.ending == RECONNECT:
-            await self._channel.close(Close.RESTART)
+            await self._close(Close.RESTART)
             return RECONNECT
         if self.ending is not None:
             return await self._refuse(Bye(self.ending))
@@ -416,7 +473,7 @@ class Session:
             await asyncio.gather(receiving, ending, return_exceptions=True)
         if ending in done:
             if self.ending == RECONNECT:
-                await self._channel.close(Close.RESTART)
+                await self._close(Close.RESTART)
                 return RECONNECT
             return await self._refuse(Bye(self.ending))
         if receiving not in done:
@@ -424,6 +481,7 @@ class Session:
         frame = receiving.result()
         if isinstance(frame, Closed):
             return _closed(frame)
+        await self._budget.take(frame)
         first = link.read_message(frame)
         if isinstance(first, Unanswerable):
             return await self._refuse(Bye.INVALID_MESSAGE, first.why)
@@ -431,8 +489,7 @@ class Session:
 
     async def _refuse(self, reason: Bye, message: str | None = None) -> str:
         """End the session before it is carried: a bye, then close."""
-        await self._channel.send(link.encode(link.bye(reason, message)))
-        await self._channel.close(Close.NORMAL)
+        await self._close(Close.NORMAL, link.bye(reason, message))
         return str(reason)
 
     async def _carry(self) -> str:
@@ -444,6 +501,7 @@ class Session:
         ending = asyncio.create_task(self._ended.wait())
         tasks = {writing, handling, reading, ending}
         close = Close.NORMAL
+        deadline: float | None = None
         try:
             await asyncio.wait({reading, ending}, return_when=asyncio.FIRST_COMPLETED)
             handling.cancel()
@@ -470,7 +528,8 @@ class Session:
                 if ended == SILENT:
                     close = Close.GOING_AWAY
             self._outbox.put_nowait(close)
-            # What was sent before leaves first, within close_timeout.
+            # What was sent before leaves first, then the close, all within close_timeout.
+            deadline = asyncio.get_running_loop().time() + self._settings.close_timeout
             await asyncio.wait({writing}, timeout=self._settings.close_timeout)
             return ended
         finally:
@@ -479,8 +538,10 @@ class Session:
             await asyncio.gather(*tasks, return_exceptions=True)
             # Closed already, unless what waited did not leave: a device that reads nothing
             # would hold this close too.
+            if deadline is None:
+                deadline = asyncio.get_running_loop().time() + self._settings.close_timeout
             with contextlib.suppress(TimeoutError):
-                async with asyncio.timeout(self._settings.close_timeout):
+                async with asyncio.timeout_at(deadline):
                     await self._channel.close(close)
 
     # The three tasks.
@@ -509,7 +570,7 @@ class Session:
                 return SILENT
             if isinstance(frame, Closed):
                 return _closed(frame)
-            await self._bucket.take()
+            await self._budget.take(frame)
             ended = self._take(frame)
             if ended is not None:
                 return ended
@@ -647,25 +708,30 @@ def _closed(closed: Closed) -> str:
     """How a session ended whose connection closed: a message too large ends it as
     ``invalid_message`` would, for its sender would send it again on a resumed one (Messages,
     Sizes)."""
-    return TOO_BIG if closed.code == Close.TOO_BIG else CLOSED
+    match closed.code:
+        case Close.TOO_BIG:
+            return TOO_BIG
+        case Close.POLICY:
+            return FLOODED
+        case Close.INVALID_TEXT:
+            return INVALID_TEXT
+    return CLOSED
 
 
-class Bucket:
-    """A token bucket: ``rate`` messages a second, in bursts of up to ``burst``."""
+class Budget:
+    """What a replica takes from one device: ``rate`` messages a second, in bursts of up to
+    ``burst``, and ``text_rate`` characters of their text a second, in bursts of up to
+    ``text_burst``."""
 
-    def __init__(self, rate: float, burst: int) -> None:
-        self.rate = rate
-        self.burst = burst
-        self._tokens = float(burst)
-        self._at = time.monotonic()
+    def __init__(self, settings: LinkSettings) -> None:
+        self._messages = TokenBucket(settings.rate, settings.burst)
+        self._text = TokenBucket(settings.text_rate, settings.text_burst)
 
-    async def take(self) -> None:
-        """Wait for a token, then use it."""
-        while True:
-            now = time.monotonic()
-            self._tokens = min(self.burst, self._tokens + (now - self._at) * self.rate)
-            self._at = now
-            if self._tokens >= 1:
-                self._tokens -= 1
-                return
-            await asyncio.sleep((1 - self._tokens) / self.rate)
+    async def take(self, frame: str | bytes) -> None:
+        """Wait until ``frame`` may be read, then count it."""
+        await self._messages.take()
+        await self._text.take(len(frame))
+
+    def full(self) -> bool:
+        """Whether nothing taken from it is left to make up."""
+        return self._messages.full() and self._text.full()
