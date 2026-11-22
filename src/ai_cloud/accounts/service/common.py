@@ -1,16 +1,32 @@
 # SPDX-License-Identifier: MIT
-"""What the accounts' use cases share: the time, the account of a request, and the ID tokens
-people sign in with."""
+"""What the accounts' use cases share: the time, the account of a request, the condition of a
+change, and the ID tokens people sign in with."""
 
 from datetime import UTC, datetime, timedelta
 
-from ai_cloud.accounts.domain.errors import InvalidGrant, RecentSignInRequired, Unauthenticated
+from ai_cloud.accounts.domain.errors import (
+    EtagMismatch,
+    InvalidGrant,
+    PreconditionFailed,
+    RecentSignInRequired,
+    Unauthenticated,
+)
 from ai_cloud.accounts.domain.model import Account, Principal, SignIn
 from ai_cloud.accounts.ports import IdTokens, Nonces, Transaction
+from ai_cloud.shared.etags import Broken, Condition
 
 
 def now() -> datetime:
     return datetime.now(UTC)
+
+
+def check_condition(condition: Condition, etag: str, what: str) -> None:
+    """That ``what``, at ``etag``, meets the condition of the change asked of it."""
+    match condition.broken(etag):
+        case Broken.IF_MATCH:
+            raise PreconditionFailed(f"{what} changed since that ETag")
+        case Broken.ETAG:
+            raise EtagMismatch(f"{what} changed since it was read")
 
 
 async def account_of(store: Transaction, principal: Principal, *, lock: bool) -> Account:

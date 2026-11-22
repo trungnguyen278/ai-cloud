@@ -17,7 +17,6 @@ from ai_cloud.accounts.domain.errors import (
     InvalidGrant,
     LastIdentity,
     NotFound,
-    PreconditionFailed,
     RateLimited,
     TooManyIdentities,
     Unauthenticated,
@@ -37,11 +36,17 @@ from ai_cloud.accounts.domain.model import (
     token_hash,
 )
 from ai_cloud.accounts.ports import DevelopmentIdTokens, Nonces, Store
-from ai_cloud.accounts.service.common import SignIns, account_of, check_signs_in_to, now
+from ai_cloud.accounts.service.common import (
+    SignIns,
+    account_of,
+    check_condition,
+    check_signs_in_to,
+    now,
+)
 from ai_cloud.accounts.service.homes import remove_from_homes
 from ai_cloud.accounts.settings import AccountsSettings
 from ai_cloud.shared.app_api import Page, page_of
-from ai_cloud.shared.etags import etag_matches
+from ai_cloud.shared.etags import Condition
 from ai_cloud.shared.jose import SigningKeys, TokenError, TokenSettings
 from ai_cloud.shared.protocols import protocol_schema
 from ai_cloud.shared.rates import RateLimiter, address_subject
@@ -261,13 +266,12 @@ class AccountsService:
             return await account_of(store, principal, lock=False)
 
     async def update_account(
-        self, principal: Principal, changes: AccountChanges, if_match: str | None
+        self, principal: Principal, changes: AccountChanges, condition: Condition
     ) -> Account:
-        """Change the account, if ``if_match`` names its ETag, or is ``None``."""
+        """Change the account, if it meets ``condition``."""
         async with self._store.transaction() as store:
             account = await account_of(store, principal, lock=True)
-            if if_match is not None and not etag_matches(if_match, account.etag):
-                raise PreconditionFailed("the account changed since that ETag")
+            check_condition(condition, account.etag, "the account")
             updated = replace(
                 account,
                 display_name=changes.display_name or account.display_name,

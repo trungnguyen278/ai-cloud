@@ -23,6 +23,7 @@ from ai_cloud.shared.app_api import (
     API,
     NO_STORE,
     PROTOCOL,
+    condition,
     instant,
     item_id,
     json_body,
@@ -122,8 +123,9 @@ def account_routes(service: AccountsService, Authenticated: Any, *, development:
             raise Problem(400, "display_name: control characters")
         languages = body.get("languages")
         changes = AccountChanges(name, None if languages is None else tuple(languages))
-        if_match = request.headers.get("if-match")
-        return _account(await call(service.update_account(principal, changes, if_match)))
+        return _account(
+            await call(service.update_account(principal, changes, condition(request, body)))
+        )
 
     @routes.post(f"{API}/account:delete")
     async def delete_account(request: Request, principal: Authenticated) -> Response:

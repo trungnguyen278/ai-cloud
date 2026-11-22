@@ -25,7 +25,7 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 
 ### Data crossing a boundary (the robot, the app, a third-party service)
 
-- The protocol changed first, in ai-platform, and the submodule's pin moved with the code that speaks it.
+- The protocol changed first, in ai-platform, and the submodule's pin moved with the code that speaks it. A pin moves to a commit that may hold other protocols' versions too, such as `cloud/v3.4` holding the app API 1.7: the whole suite runs on the new pin before anything is built on it.
 - Every message received is validated: its schema, its size, its numbers (finite), its strings (length); what fails is refused (SEC-14). Rates and sizes are limited (SEC-15).
 - Schemas are checked through `shared/protocols.py`, never a bare validator: Python's `$` also matches before a last newline, which JSON Schema's does not.
 - Text can hold a lone surrogate, which JSON's escapes can spell and no driver can store, or a U+0000, which PostgreSQL's `text` cannot hold (a `500` in the driver): JSON read any other way than `read_json` (and `json_body`, which uses it) must refuse both, in names as in strings, at every depth (ai-platform ADR-0014). A check of the value that a parser returns misses what the parser dropped: `json.loads` keeps the last of a repeated name, which is why `read_json` refuses repeated names. What else I-JSON forbids, the cloud holds: a test shows which.
@@ -36,6 +36,8 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - What a token says before it is verified, such as a registration's challenge, is checked for its form before anything uses it: a lone surrogate in it fails as a `500` where it is hashed or stored. The whole token is verified after.
 - What the cloud keys on, such as a device's key, is read one way only: base64url strictly, without padding or bits left over, and a curve's coordinates below its prime. PyJWT's decoding and `cryptography` both accept more, and one key would have two thumbprints.
 - A request that uses something once, such as a challenge, keeps its answer for a retry whatever it is, a refusal included, in the transaction of the use. One that used nothing keeps nothing.
+- A change's condition is read where each version of the protocol puts it: the app API 1.7's `etag` in the body, compared as written, and the `If-Match` of apps of 1.6, a list or `*`. When both come, each is checked, `If-Match` first (RFC 9110, 13.2.1). A test sends each, and both, at every endpoint that takes them.
+- A limit that the protocol fixes, such as the 64 KiB of a body, is a named constant beside its citation, never a setting, and a test sends the limit and one byte more, with and without a length.
 - A first answer kept for a retry was written by the API of its day: a field added since, such as a device's `etag`, is missing from it, and what gives it again must not count on it.
 - PyJWT checks a token's times with `int()`, which takes the text of a number, and `true`. A claim that the code computes with is checked as a JSON number first.
 - What a device must hear before its connection closes, such as `reconnect`, is sent before uvicorn's own shutdown, which closes every WebSocket itself before the application's lifespan ends.

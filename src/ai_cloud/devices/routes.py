@@ -30,6 +30,7 @@ from ai_cloud.shared.app_api import (
     StatusProblems,
     TypedProblems,
     bearer_token,
+    condition,
     idempotency_key,
     instant,
     item_id,
@@ -50,6 +51,7 @@ _TYPED: TypedProblems = {
     errors.RegistrationInvalid: ("registration_invalid", 400, "Registration invalid"),
     errors.DeviceTaken: ("device_taken", 409, "Device taken"),
     errors.DeviceLimitReached: ("device_limit_reached", 409, "Device limit reached"),
+    errors.EtagMismatch: ("etag_mismatch", 409, "Etag mismatch"),
 }
 # Any other problem is about:blank.
 _STATUSES: StatusProblems = {
@@ -113,9 +115,14 @@ def router(service: DevicesService, tokens: DeviceTokens, links: Links) -> APIRo
         home_id: str, device_id: str, request: Request, account: Account
     ) -> Response:
         body = await json_body(request, update_schema)
-        if_match = request.headers.get("if-match")
         device = await call(
-            service.rename(account, item_id(home_id), item_id(device_id), body["name"], if_match)
+            service.rename(
+                account,
+                item_id(home_id),
+                item_id(device_id),
+                body["name"],
+                condition(request, body),
+            )
         )
         return _tagged(_device(device))
 

@@ -3,7 +3,9 @@
 
 import asyncio
 import time
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
+from urllib.parse import urlencode
 
 import jwt
 import pytest
@@ -228,21 +230,43 @@ async def test_a_sign_in_after_the_account_is_deleted_makes_a_new_one(cloud) -> 
     assert (await cloud.account(again))["id"] != before
 
 
-async def test_a_body_is_so_large_at_most(make_cloud) -> None:
-    cloud = await make_cloud(api={"max_body_size": 1024})
-    form = {"grant_type": EXCHANGE, "subject_token": "x" * 2000, "client_id": CLIENT}
-    problem(await cloud.http.post("/app/token", data=form), 413)
+# The cloud's address: "A request's body holds up to 64 KiB, 65,536 bytes as sent".
+LARGEST_BODY = 65_536
 
-    async def chunks():
-        for _ in range(4):
-            yield b"x" * 512
 
-    # Without a length, it is cut off as it comes.
-    streamed = await cloud.http.post(
+@pytest.mark.parametrize("declared", [True, False], ids=["with its length", "without"])
+@pytest.mark.parametrize("size", [LARGEST_BODY, LARGEST_BODY + 1])
+async def test_a_body_is_so_large_at_most(cloud, size: int, declared: bool) -> None:
+    """A body of 64 KiB is read, and a larger one gets 413: at once when it says how long it
+    is, and otherwise as it comes, at every endpoint, OAuth's included (the app API, The
+    cloud's address)."""
+    tokens = await cloud.sign_in()
+    start, end = b'{"languages": ["vi"], "padding": "', b'"}'
+    change = start + b"x" * (size - len(start) - len(end)) + end
+    form = urlencode({"grant_type": EXCHANGE, "client_id": CLIENT, "subject_token": ""})
+    token = (form + "x" * (size - len(form))).encode()
+    assert len(change) == len(token) == size
+
+    async def chunks(body: bytes) -> AsyncIterator[bytes]:
+        for at in range(0, len(body), 4096):
+            yield body[at : at + 4096]
+
+    changed = await cloud.http.patch(
+        "/app/v1/account",
+        content=change if declared else chunks(change),
+        headers={**bearer(tokens), "Content-Type": "application/json"},
+    )
+    exchanged = await cloud.http.post(
         "/app/token",
-        content=chunks(),
+        content=token if declared else chunks(token),
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
-    problem(streamed, 413)
-    # Below the limit, the request goes on.
-    assert (await cloud.exchange(await cloud.id_token())).status_code == 200
+    if size > LARGEST_BODY:
+        problem(changed, 413)
+        problem(exchanged, 413)
+        return
+    # Read whole: a field that the cloud does not know is no matter, and an ID token so long
+    # is no valid one.
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["languages"] == ["vi"]
+    assert exchanged.status_code == 400, exchanged.text
