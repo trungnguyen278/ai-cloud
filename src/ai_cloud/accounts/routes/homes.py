@@ -22,6 +22,7 @@ from ai_cloud.shared.app_api import (
     API,
     NO_STORE,
     PROTOCOL,
+    condition,
     idempotency_key,
     instant,
     item_id,
@@ -82,8 +83,9 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
             body.get("time_zone"),
             None if languages is None else tuple(languages),
         )
-        if_match = request.headers.get("if-match")
-        view = await call(service.update_home(principal, item_id(home_id), changes, if_match))
+        view = await call(
+            service.update_home(principal, item_id(home_id), changes, condition(request, body))
+        )
         return _tagged(_home(view))
 
     @routes.post(API + "/homes/{home_id}:transfer")
@@ -139,10 +141,9 @@ def home_routes(service: HomesService, Authenticated: Any) -> APIRouter:
         body = await json_body(request, schemas["member_update"])
         role = body.get("role")
         changes = MemberChanges(body.get("display_name"), None if role is None else Role(role))
-        if_match = request.headers.get("if-match")
         member = await call(
             service.update_member(
-                principal, item_id(home_id), item_id(member_id), changes, if_match
+                principal, item_id(home_id), item_id(member_id), changes, condition(request, body)
             )
         )
         return _tagged(_member(member, current=member.account_id == principal.account_id))

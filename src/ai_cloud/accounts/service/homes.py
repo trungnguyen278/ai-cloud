@@ -28,7 +28,6 @@ from ai_cloud.accounts.domain.errors import (
     NotTransferable,
     OwnerCannotLeave,
     OwnsHomeWithMembers,
-    PreconditionFailed,
     RateLimited,
     RoleNotChangeable,
     RoleRequired,
@@ -56,10 +55,16 @@ from ai_cloud.accounts.domain.model import (
     token_hash,
 )
 from ai_cloud.accounts.ports import Store, Transaction
-from ai_cloud.accounts.service.common import SignIns, account_of, check_signs_in_to, now
+from ai_cloud.accounts.service.common import (
+    SignIns,
+    account_of,
+    check_condition,
+    check_signs_in_to,
+    now,
+)
 from ai_cloud.accounts.settings import AccountsSettings
 from ai_cloud.shared.app_api import AppApiSettings, IdempotencyKey, Page, page_of
-from ai_cloud.shared.etags import etag_matches
+from ai_cloud.shared.etags import Condition
 from ai_cloud.shared.rates import RateLimiter
 
 log = logging.getLogger(__name__)
@@ -150,16 +155,15 @@ class HomesService:
         return Membership(member.id, member.role, may_manage(member))
 
     async def update_home(
-        self, principal: Principal, home_id: UUID, changes: HomeChanges, if_match: str | None
+        self, principal: Principal, home_id: UUID, changes: HomeChanges, condition: Condition
     ) -> HomeView:
-        """Change the home, if ``if_match`` names its ETag, or is ``None``."""
+        """Change the home, if it meets ``condition``."""
         if changes.time_zone is not None:
             self._check_time_zone(changes.time_zone)
         async with self._store.transaction() as store:
             view = await _in_home(store, home_id, principal, lock=True)
             _check_may_manage(view.member)
-            if if_match is not None and not etag_matches(if_match, view.home.etag):
-                raise PreconditionFailed("the home changed since that ETag")
+            check_condition(condition, view.home.etag, "the home")
             home = view.home
             updated = replace(
                 home,
@@ -264,10 +268,10 @@ class HomesService:
         home_id: UUID,
         member_id: UUID,
         changes: MemberChanges,
-        if_match: str | None,
+        condition: Condition,
     ) -> Member:
-        """Change a person, if ``if_match`` names their ETag, or is ``None``. Demoting an
-        admin revokes the invitations they made."""
+        """Change a person, if they meet ``condition``. Demoting an admin revokes the
+        invitations they made."""
         async with self._store.transaction() as store:
             view = await _in_home(store, home_id, principal, lock=True)
             target = await store.member(home_id, member_id)
@@ -280,8 +284,7 @@ class HomesService:
                 _check_owner(view.member)
                 if target.account_id is None or target.role is Role.OWNER:
                     raise RoleNotChangeable("a profile has no role, and only handing over owns")
-            if if_match is not None and not etag_matches(if_match, target.etag):
-                raise PreconditionFailed("the person changed since that ETag")
+            check_condition(condition, target.etag, "the person")
             updated = replace(
                 target,
                 display_name=(

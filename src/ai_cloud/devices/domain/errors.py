@@ -32,7 +32,11 @@ class RoleRequired(DevicesError):
 
 
 class PreconditionFailed(DevicesError):
-    """The device has changed since the ETag that the request named."""
+    """The device has changed since the ETag that the request's If-Match named."""
+
+
+class EtagMismatch(DevicesError):
+    """The device has changed since the etag that the request's body brought."""
 
 
 class RegistrationInvalid(DevicesError):

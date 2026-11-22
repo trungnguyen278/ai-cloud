@@ -22,6 +22,7 @@ from ai_cloud.accounts.api import Accounts
 from ai_cloud.devices.api import MAX_MESSAGE, Devices
 from ai_cloud.entry.settings import CloudSettings
 from ai_cloud.shared import problems
+from ai_cloud.shared.app_api import MAX_BODY
 from ai_cloud.shared.database import DATABASE_URL_ENV, create_engine, database_url
 from ai_cloud.shared.jose import SIGNING_KEYS_ENV, SigningKeys
 from ai_cloud.shared.limits import BodyLimit
@@ -97,7 +98,8 @@ def create_app(settings: CloudSettings, secrets: ApiSecrets) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.going_away = devices.going_away
     problems.install(app)
-    app.add_middleware(BodyLimit, limit=settings.api.max_body_size)
+    # The app API's, which the cloud link's token endpoint, which names none, keeps too.
+    app.add_middleware(BodyLimit, limit=MAX_BODY)
     app.include_router(accounts.router)
     app.include_router(devices.router)
 

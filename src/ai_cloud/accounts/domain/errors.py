@@ -38,7 +38,11 @@ class NotFound(AccountsError):
 
 
 class PreconditionFailed(AccountsError):
-    """What the request changes has changed since the ETag it named."""
+    """What the request changes has changed since the ETag its If-Match named."""
+
+
+class EtagMismatch(AccountsError):
+    """What the request changes has changed since the etag its body brought."""
 
 
 class IdentityTaken(AccountsError):

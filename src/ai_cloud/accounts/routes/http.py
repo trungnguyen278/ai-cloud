@@ -21,6 +21,7 @@ _TYPED: TypedProblems = {
     errors.HomeLimitReached: ("home_limit_reached", 409, "Home limit reached"),
     errors.MemberLimitReached: ("member_limit_reached", 409, "Member limit reached"),
     errors.InvitationLimitReached: ("invitation_limit_reached", 409, "Invitation limit reached"),
+    errors.EtagMismatch: ("etag_mismatch", 409, "Etag mismatch"),
 }
 # Any other problem is about:blank.
 _STATUSES: StatusProblems = {

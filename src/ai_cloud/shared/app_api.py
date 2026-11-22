@@ -22,6 +22,7 @@ from fastapi import Request
 from pydantic import Field
 
 from ai_cloud.shared.config import Settings
+from ai_cloud.shared.etags import Condition
 from ai_cloud.shared.oauth import CHALLENGE, NO_STORE, bearer, media_type
 from ai_cloud.shared.problems import Problem
 from ai_cloud.shared.protocols import Schema, Unreadable, read_json
@@ -29,6 +30,7 @@ from ai_cloud.shared.protocols import Schema, Unreadable, read_json
 __all__ = [
     "API",
     "CHALLENGE",
+    "MAX_BODY",
     "NO_STORE",
     "PAGE_SIZE_DEFAULT",
     "PAGE_SIZE_MAX",
@@ -38,6 +40,7 @@ __all__ = [
     "IdempotencyKey",
     "Page",
     "bearer_token",
+    "condition",
     "idempotency_key",
     "instant",
     "item_id",
@@ -54,6 +57,9 @@ __all__ = [
 PROTOCOL = "app"
 API = "/app/v1"
 PROBLEMS = f"{API}/problems/"
+# The cloud's address: "A request's body holds up to 64 KiB, 65,536 bytes as sent", at every
+# endpoint, and a larger one gets 413.
+MAX_BODY = 64 * 1024
 PAGE_SIZE_DEFAULT = 20  # Sessions
 PAGE_SIZE_MAX = 50
 # Requests: a UUID that the app makes, as a quoted string.
@@ -124,8 +130,8 @@ def bearer_token(request: Request) -> str:
 
 async def json_body(request: Request, schema: Schema) -> dict[str, Any]:
     """The request's JSON body, which every side can hold (ai-platform's ADR-0014), and
-    checked against ``schema``: ``400`` otherwise, whatever is
-    wrong (the app API 1.6, The cloud's address)."""
+    checked against ``schema``: ``400`` otherwise, whatever is wrong (the app API, The
+    cloud's address)."""
     if media_type(request) != _JSON:
         raise Problem(415, f"the body must be {_JSON}")
     try:
@@ -135,6 +141,12 @@ async def json_body(request: Request, schema: Schema) -> dict[str, Any]:
     if (problem := schema.problem(body)) is not None:
         raise Problem(400, problem)
     return body
+
+
+def condition(request: Request, body: Mapping[str, Any]) -> Condition:
+    """What the change that ``request`` asks, with ``body``, is made on: the etag that its
+    body brings, and the ``If-Match`` of apps of 1.6 (the app API, Requests, ``etag``)."""
+    return Condition(body.get("etag"), request.headers.get("if-match"))
 
 
 def item_id(text: str) -> UUID:

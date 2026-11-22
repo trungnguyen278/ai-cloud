@@ -90,3 +90,8 @@ def test_each_message_is_checked_as_every_side_checks_it(vector: dict[str, Any])
     problem = schema.problem(read_json(data))
     assert time.perf_counter() - started <= VALIDATING["seconds"]
     assert (problem is None) == (vector["result"] == "valid"), problem
+    if "keyword" in vector:
+        # The cloud's answer names the rule that a message breaks (Schema.problem), so it
+        # names the only one that the vector breaks (its README, Running them).
+        assert problem is not None
+        assert vector["keyword"] in problem, problem

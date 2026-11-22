@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The devices' use cases: challenges, registrations, a home's devices and their names, the
 devices' access tokens, and what goes when a home or an account does (ai-platform ADR-0012 and
-ADR-0013, its app API 1.6, and the cloud link 3.3). A device removed, or gone with its home,
+ADR-0013, its app API 1.7, and the cloud link 3.3). A device removed, or gone with its home,
 is hinted at, so that its control channel ends (docs/decisions/0011-control-channels.md); one
 that leaves its home is removed as here by its own control channel (links.py).
 
@@ -28,6 +28,7 @@ from ai_cloud.devices.domain.errors import (
     DeviceLimitReached,
     DevicesError,
     DeviceTaken,
+    EtagMismatch,
     IdempotencyKeyBusy,
     IdempotencyKeyReused,
     NotFound,
@@ -59,7 +60,7 @@ from ai_cloud.devices.domain.model import (
 from ai_cloud.devices.ports import Assertions, Hints, People, Presence, Store, Transaction
 from ai_cloud.devices.settings import DevicesSettings
 from ai_cloud.shared.app_api import AppApiSettings, IdempotencyKey, Page, page_of
-from ai_cloud.shared.etags import etag_matches
+from ai_cloud.shared.etags import Broken, Condition
 from ai_cloud.shared.events import Event
 from ai_cloud.shared.jose import SigningKeys, TokenError, TokenSettings
 from ai_cloud.shared.rates import RateLimiter, address_subject
@@ -216,17 +217,25 @@ class DevicesService:
         return await self._shown(device)
 
     async def rename(
-        self, account_id: UUID, home_id: UUID, device_id: UUID, name: str, if_match: str | None
+        self,
+        account_id: UUID,
+        home_id: UUID,
+        device_id: UUID,
+        name: str,
+        condition: Condition,
     ) -> Shown:
-        """Rename one of the home's devices, for the owner or an admin, if ``if_match`` names
-        its ETag, or is ``None``."""
+        """Rename one of the home's devices, for the owner or an admin, if it meets
+        ``condition``."""
         await self._check_manages(account_id, home_id, "renames devices")
         async with self._store.transaction() as store:
             device = await store.hold_device(device_id)
             if device is None or device.home_id != home_id:
                 raise NotFound("no such device in the home")
-            if if_match is not None and not etag_matches(if_match, device.etag):
-                raise PreconditionFailed("the device changed since that ETag")
+            match condition.broken(device.etag):
+                case Broken.IF_MATCH:
+                    raise PreconditionFailed("the device changed since that ETag")
+                case Broken.ETAG:
+                    raise EtagMismatch("the device changed since it was read")
             device = renamed(device, name)
             await store.save_name(device)
         log.info("device renamed", extra={"home": str(home_id), "device": str(device_id)})

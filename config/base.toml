@@ -17,9 +17,6 @@ access_log = false
 # api, by address or network. Rate limits count by the address it gives, so it must be
 # listed, or every request would count as the proxy's own.
 forwarded_allow_ips = ["127.0.0.1", "::1"]
-# Bytes a request's body may have at most. The app API's largest is an ID token with
-# Apple's code, some 10 KB.
-max_body_size = 65536
 # Seconds the api waits, as it stops, for its requests and connections to end once its
 # devices were asked to connect again, before it cancels what is left. Without a bound, a
 # device that reads nothing would hold the stop without end: its connection never closes.
