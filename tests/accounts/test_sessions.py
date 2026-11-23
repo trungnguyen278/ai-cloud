@@ -192,8 +192,11 @@ async def test_an_access_token_signs_out_too(cloud) -> None:
 
 
 async def test_revoking_answers_200_whatever_the_token(cloud) -> None:
+    """Any that a form may carry (RFC 7009, 2.2): one outside the characters that tokens are
+    written in breaks the form, which gets OAuth's invalid_request (RFC 7009, 2.2.1; the app
+    API, since 1.8), as tests/accounts/test_sign_in.py's vectors show."""
     tokens = await cloud.sign_in()
-    for token in ("not a token", "x" * 43, tokens["refresh_token"] + "x"):
+    for token in ("not-a-token", "x" * 43, tokens["refresh_token"] + "x"):
         assert (await cloud.revoke(token)).status_code == 200
     assert (await cloud.refresh(tokens["refresh_token"])).status_code == 200
 

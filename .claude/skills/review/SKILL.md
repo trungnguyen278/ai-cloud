@@ -99,6 +99,7 @@ The linters and the tests the README lists, as CI runs them. A failing check is 
 - A test that holds a step open, such as a registry's read that waits for its release, bounds its own wait: a regression that reaches the step would hang instead of failing.
 - No fixed sleeps to wait for readiness: wait for the condition, with a timeout. A race test waits until the other side is blocked on its lock, as `pg_stat_activity` shows, before it lets the first go.
 - A test that compares a module's tables with what it declares looks at that module's schema only: the other modules' tables show as removed.
+- A test's values keep to the protocol's patterns, which a pin can tighten: revoking `not a token`, with spaces, became a form that the app API 1.8 refuses, and tested the refusal instead of the answer it meant. The whole suite runs on a new pin, and the forms' vectors go to the real endpoints as the app writes them (WHATWG's form encoding, which percent-encodes `~` where Python's `urlencode` does not).
 
 ### Repository rules (CONTRIBUTING.md, AGENTS.md)
 

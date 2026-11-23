@@ -47,6 +47,8 @@ testpaths = ["tests"]
 addopts = ["-ra", "--import-mode=importlib"]
 pythonpath = ["tests"]  # for the helpers the tests share, such as app_api.py
 strict = true
+# A parametrized test with no parameters, such as vectors that no longer come, fails.
+empty_parameter_set_mark = "fail_at_collect"
 filterwarnings = ["error"]
 
 [tool.ruff]
