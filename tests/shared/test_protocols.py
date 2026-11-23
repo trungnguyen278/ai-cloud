@@ -40,7 +40,10 @@ def test_a_body_that_matches_has_no_problem() -> None:
         ({"client_id": "ai-app"}, "'token' is a required property"),
         ({"token": TOKEN, "client_id": "ai-app"}, "token: breaks maxLength 8192"),
         ({"token": 1, "client_id": "ai-app"}, "token: must be of type string"),
-        ({"token": "t", "client_id": "ai-app", "token_type_hint": TOKEN[:20]}, "enum"),
+        (
+            {"token": "t", "client_id": "ai-app", "token_type_hint": TOKEN[:129]},
+            "token_type_hint: breaks maxLength 128",
+        ),
         ([TOKEN], "the body: must be of type object"),
     ],
 )

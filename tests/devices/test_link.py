@@ -148,7 +148,7 @@ async def test_the_hellos_open_a_session(cloud) -> None:
     async with served(cloud) as url:
         async with linked(url, await token(cloud, device)) as link:
             answer = await link.open(protocol="3.7")
-            assert answer["protocol"] == "3.5"  # the lower of the two minors
+            assert answer["protocol"] == "3.6"  # the lower of the two minors
             assert answer["resumed"] is False
             assert uuid.UUID(answer["session"]).version == 7
             assert answer["ping_interval"] == cloud.settings.devices.link.ping_interval
@@ -522,7 +522,7 @@ async def test_a_device_that_leaves_its_home_is_removed_then_told(cloud) -> None
     access_token = await token(cloud, device)
     async with served(cloud) as url:
         async with linked(url, access_token) as link:
-            assert (await link.open())["protocol"] == "3.5"
+            assert (await link.open())["protocol"] == "3.6"
             await link.say({"type": "leave", "seq": 1})
             assert await link.hear() == {"type": "bye", "reason": "left"}
             assert await link.ended() == 1000
@@ -1002,6 +1002,62 @@ async def test_text_that_is_no_utf_8_closes_the_connection(
         assert await link.ended() == 1007
         await until(lambda: _ended_as(caplog, ["invalid_text"]))
     assert [each.getMessage() for each in caplog.records if each.levelno >= logging.ERROR] == []
+
+
+# A key that masks nothing, for frames written whole below the client.
+MASK = bytes(4)
+
+
+@pytest.mark.parametrize(
+    "frame",
+    [
+        pytest.param(b"\x81\x00", id="unmasked"),  # RFC 6455, 5.1
+        pytest.param(b"\xc1\x80" + MASK, id="a reserved bit"),  # 5.2
+        pytest.param(b"\x83\x80" + MASK, id="an opcode undefined"),  # 5.2
+        pytest.param(b"\x80\x80" + MASK, id="a continuation of nothing"),  # 5.4
+        pytest.param(b"\x09\x80" + MASK, id="a ping fragmented"),  # 5.5
+        pytest.param(b"\x89\xfe\x00\x7e" + MASK + bytes(126), id="a ping of 126 bytes"),  # 5.5
+    ],
+)
+async def test_a_frame_past_websockets_own_rules_closes_the_connection(
+    cloud, caplog: pytest.LogCaptureFixture, frame: bytes
+) -> None:
+    """With 1002, as WebSocket fails a connection over it (RFC 6455, 7.4.1), and as no error of
+    the cloud's. The session ends with it (Messages, Validation, since 3.6)."""
+    caplog.set_level(logging.INFO)
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at, linked(at, await token(cloud, device)) as link:
+        await link.open()
+        # Below the client's own checks.
+        link.ws.transport.write(frame)
+        assert await link.ended() == 1002
+        await until(lambda: _ended_as(caplog, ["invalid_frame"]))
+    assert [each.getMessage() for each in caplog.records if each.levelno >= logging.ERROR] == []
+
+
+@pytest.mark.parametrize(
+    ("code", "ended"),
+    [
+        (1002, "invalid_frame"),
+        (1007, "invalid_text"),
+        (1008, "flooded"),
+        (1009, "too_big"),
+        (1001, "closed"),
+    ],
+)
+async def test_the_devices_own_close_ends_the_session_as_the_clouds_would(
+    cloud, caplog: pytest.LogCaptureFixture, code: int, ended: str
+) -> None:
+    """A device fails the connection with the same codes, over what the cloud sent, and both
+    sides end the session (Messages: Validation, Sizes and Frames, since 3.6); any other close
+    leaves it to resume (Resuming a session)."""
+    caplog.set_level(logging.INFO)
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at:
+        async with linked(at, await token(cloud, device)) as link:
+            await link.open()
+            await link.ws.close(code)
+        await until(lambda: _ended_as(caplog, [ended]))
 
 
 # A request to upgrade to what uvicorn does not serve, HTTP/2 over plain TCP.

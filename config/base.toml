@@ -227,7 +227,9 @@ hello_timeout = 5
 # Seconds between a device's pings, which the cloud's hello gives: the cloud link's starting
 # point. The cloud closes a connection from which nothing has come for two of them, or to
 # which nothing could be sent for as long. A connection may send twice as many of
-# WebSocket's Pings at once, and one a second (the cloud link's Frames, since 3.4).
+# WebSocket's Pings at once, and one a second (the cloud link's Frames, since 3.4). It stays
+# well under the idle timeout of the Cloudflare edge in front of the cloud, about 100 s and
+# unconfirmed (docs/architecture.md, Deployment).
 ping_interval = 20
 # What the cloud takes from a device: 50 messages a second, in bursts of 100, and 500 more
 # waiting their turn. The cloud link's starting points for what a device takes from the

@@ -191,6 +191,16 @@ async def test_an_access_token_signs_out_too(cloud) -> None:
     assert (await cloud.refresh(tokens["refresh_token"])).status_code == 200
 
 
+@pytest.mark.parametrize("hint", ["access_token", "refresh_token", "pct", " ~"])
+@pytest.mark.parametrize("kind", ["access_token", "refresh_token"])
+async def test_a_hint_only_says_where_to_look_first(cloud, kind: str, hint: str) -> None:
+    """Whatever it names, the token is found and its session ends, and a hint that the cloud
+    does not know is ignored (RFC 7009, 2.1 and 2.2; the app API, Signing out, since 1.9)."""
+    tokens = await cloud.sign_in()
+    assert (await cloud.revoke(tokens[kind], token_type_hint=hint)).status_code == 200
+    oauth_error(await cloud.refresh(tokens["refresh_token"]), "invalid_grant")
+
+
 async def test_revoking_answers_200_whatever_the_token(cloud) -> None:
     """Any that a form may carry (RFC 7009, 2.2): one outside the characters that tokens are
     written in breaks the form, which gets OAuth's invalid_request (RFC 7009, 2.2.1; the app
