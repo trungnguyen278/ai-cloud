@@ -1102,7 +1102,7 @@ async def test_a_replica_takes_so_many_connections_then_says_when_to_try_again()
     assert 1.9 < refused.value.retry_after <= 2
 
 
-@pytest.mark.parametrize("access_token", [None, "not a token"])
+@pytest.mark.parametrize("access_token", [None, "not-a-token"])
 async def test_attempts_without_a_valid_token_spend_nothing_the_cloud_counts(
     access_token: str | None,
 ) -> None:

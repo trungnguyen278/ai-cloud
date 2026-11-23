@@ -2,16 +2,18 @@
 """Signing in: the nonce and the exchange (the app API, Signing in)."""
 
 import asyncio
+import json
 import time
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
-from urllib.parse import urlencode
+from urllib.parse import quote_plus, urlencode
 
 import jwt
 import pytest
 from app_api import ADDRESS, CLIENT, EXCHANGE, ID_TOKEN, bearer, oauth_error, problem
 
 from ai_cloud.accounts.adapters import development
+from ai_cloud.shared.protocols import platform_dir
 
 pytestmark = pytest.mark.anyio
 
@@ -106,7 +108,7 @@ async def test_a_forged_token_of_a_known_issuer_is_refused(cloud) -> None:
 
 
 @pytest.mark.parametrize(
-    "token", ["not a token", "a.b.c", "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOjF9.c2ln"]
+    "token", ["not-a-token", "a.b.c", "eyJhbGciOiJSUzI1NiJ9.eyJpc3MiOjF9.c2ln"]
 )
 async def test_a_malformed_token_is_refused(cloud, token: str) -> None:
     oauth_error(await cloud.exchange(token), "invalid_grant")
@@ -163,6 +165,54 @@ async def test_a_malformed_request_says_what_is_wrong(cloud, form, error, says) 
     assert says in description
     # What was sent is not repeated back: it might be a token.
     assert "x" * 50 not in description
+
+
+# ai-platform's vectors of the OAuth forms, each sent to its endpoint as the app sends it: a
+# form, in which a token, the app's identifier and Apple's code take at most three bytes for
+# each character, for they are written in base64url and dots and in printable ASCII (the app
+# API, since 1.8).
+FORMS = {
+    "token_exchange_request": "/app/token",
+    "refresh_request": "/app/token",
+    "revoke_request": "/app/revoke",
+}
+VECTORS = json.loads(
+    (platform_dir().parent / "vectors" / "validating.json").read_text(encoding="utf-8")
+)["vectors"]
+
+
+@pytest.mark.parametrize(
+    "vector",
+    [
+        pytest.param(vector, id=vector["id"])
+        for vector in VECTORS
+        if vector["protocol"] == "app" and vector["definition"] in FORMS
+    ],
+)
+async def test_a_form_is_checked_as_every_side_checks_it(cloud, vector) -> None:
+    form = json.loads(vector["text"])
+    body = "&".join(f"{_form_component(name)}={_form_component(form[name])}" for name in form)
+    response = await cloud.http.post(
+        FORMS[vector["definition"]],
+        content=body,
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    if vector["result"] == "valid":
+        # The form passes, and what is no token or client of the cloud's is refused after.
+        assert response.status_code in {400, 401}, response.text
+        assert response.json()["error"] in {"invalid_client", "invalid_grant"}
+        return
+    where, _, rule = oauth_error(response, "invalid_request").partition(": ")
+    assert vector["keyword"] in rule
+    # The field is named, never what it holds: it might be a token.
+    assert form[where] not in rule
+
+
+def _form_component(text: str) -> str:
+    """``text`` in a form as the app writes it, as the WHATWG URL Standard serializes one:
+    every byte but letters, digits and ``*-._`` percent-encoded, and a space as ``+``
+    (ai-app's ``formEncode``). Python's ``urlencode`` leaves a ``~`` as it is."""
+    return quote_plus(text, safe="*").replace("~", "%7E")
 
 
 async def test_a_field_may_not_come_twice(cloud) -> None:

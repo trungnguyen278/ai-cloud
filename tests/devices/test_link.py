@@ -74,7 +74,7 @@ async def until(condition: Any) -> None:
 async def test_a_device_without_a_valid_token_is_refused(cloud) -> None:
     tokens, _, device = await registered(cloud)
     async with served(cloud) as url:
-        for access_token in (None, "", "not a token", tokens["access_token"]):
+        for access_token in (None, "", "not-a-token", tokens["access_token"]):
             refusal = await refused(url, access_token)
             assert refusal.status == 401
             assert refusal.headers["content-type"] == "application/problem+json"
@@ -148,7 +148,7 @@ async def test_the_hellos_open_a_session(cloud) -> None:
     async with served(cloud) as url:
         async with linked(url, await token(cloud, device)) as link:
             answer = await link.open(protocol="3.7")
-            assert answer["protocol"] == "3.4"  # the lower of the two minors
+            assert answer["protocol"] == "3.5"  # the lower of the two minors
             assert answer["resumed"] is False
             assert uuid.UUID(answer["session"]).version == 7
             assert answer["ping_interval"] == cloud.settings.devices.link.ping_interval
@@ -522,7 +522,7 @@ async def test_a_device_that_leaves_its_home_is_removed_then_told(cloud) -> None
     access_token = await token(cloud, device)
     async with served(cloud) as url:
         async with linked(url, access_token) as link:
-            assert (await link.open())["protocol"] == "3.4"
+            assert (await link.open())["protocol"] == "3.5"
             await link.say({"type": "leave", "seq": 1})
             assert await link.hear() == {"type": "bye", "reason": "left"}
             assert await link.ended() == 1000
@@ -913,7 +913,7 @@ async def test_attempts_without_a_valid_token_lock_no_device_out(make_cloud) -> 
         # Past its own rate, however often it tries.
         for _ in range(10):
             assert (await refused(at, eager_token)).status == 429
-        for access_token in (None, "not a token", forged(cloud, device)) * 10:
+        for access_token in (None, "not-a-token", forged(cloud, device)) * 10:
             assert (await refused(at, access_token)).status == 401
         # None of them spent what the replica takes: it takes the second of its two.
         async with linked(at, await token(cloud, device)) as link:
@@ -990,7 +990,8 @@ async def test_text_that_is_no_utf_8_closes_the_connection(
     cloud, caplog: pytest.LogCaptureFixture
 ) -> None:
     """With 1007, as WebSocket fails a connection over it (RFC 6455, 8.1), and as no error of
-    the cloud's: uvicorn would log one, with a traceback."""
+    the cloud's: uvicorn would log one, with a traceback. The session ends with it (Messages,
+    Validation, since 3.5)."""
     caplog.set_level(logging.INFO)
     _, _, device = await registered(cloud)
     async with served(cloud) as at, linked(at, await token(cloud, device)) as link:
@@ -1033,7 +1034,7 @@ async def test_handshakes_are_logged_as_requests_are(
     async with running(cloud) as server:
         at = url(server)
         caplog.clear()
-        for refused_token in (None, "not a token", forged(cloud, device)):
+        for refused_token in (None, "not-a-token", forged(cloud, device)):
             await refused(at, refused_token)
         # Nor does a request that uvicorn cannot parse, or upgrade, a URL whose port httptools
         # refuses as uvicorn's callback parses it among them.
