@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: MIT
 """The devices' control channels: each connection's session, from the device's hello to its
-end, and what a replica of the api does for the sessions it holds (the cloud link 3.5,
+end, and what a replica of the api does for the sessions it holds (the cloud link 3.6,
 platform/protocols/cloud/README.md; docs/decisions/0011-control-channels.md).
 
 A connection opens once the device's access token verifies and the registry holds the
@@ -60,6 +60,7 @@ SILENT = "silent"  # nothing came for two ping intervals
 STALLED = "stalled"  # nothing the cloud sent could leave for two ping intervals
 FLOODED = "flooded"  # frames below the session broke the link's rules for them, and closed it
 INVALID_TEXT = "invalid_text"  # text that was no UTF-8 closed the connection
+INVALID_FRAME = "invalid_frame"  # a frame past WebSocket's own rules closed the connection
 
 
 class Links:
@@ -705,10 +706,14 @@ class Session:
 
 
 def _closed(closed: Closed) -> str:
-    """How a session ended whose connection closed: a message too large, text that is no UTF-8
-    and frames past their rules end it as ``invalid_message`` would, for their sender would
-    send them again on a resumed one (Messages: Sizes, Validation since 3.5, and Frames)."""
+    """How a session ended whose connection closed: a message too large, text that is no UTF-8,
+    frames past the link's rules and a frame past WebSocket's own end it as ``invalid_message``
+    would, whichever side closed, for their sender would send them again on a resumed one
+    (Messages: Sizes, Validation since 3.5 and 3.6, and Frames). Any other close leaves the
+    session to resume (Resuming a session)."""
     match closed.code:
+        case Close.PROTOCOL_ERROR:
+            return INVALID_FRAME
         case Close.TOO_BIG:
             return TOO_BIG
         case Close.POLICY:

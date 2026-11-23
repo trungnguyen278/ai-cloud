@@ -67,7 +67,10 @@ class WebSocketProtocol(WebSocketsSansIOProtocol):
     then logs the failure with its traceback: the connection closes here, as it would. Text
     that is no UTF-8 fails the connection with 1007 (RFC 6455, 8.1 and 7.4.1), as in uvicorn,
     which logs it as an error of its own, with a traceback: the session's end notes it here,
-    as it notes a message too large.
+    as it notes a message too large. A frame that breaks WebSocket's own rules after the
+    handshake fails the connection with 1002, "protocol error" (RFC 6455, 5.1 to 5.5 and
+    7.4.1): websockets 17.3 sends the close, and uvicorn 0.54 passes its code on as the
+    connection's end, which the session's end notes too (the cloud link, since 3.6).
 
     Refusals. uvicorn 0.54 leaves the handshake of a connection that the application refused
     unfinished, and so logs an error for each once the application returns, "ASGI callable

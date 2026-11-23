@@ -198,9 +198,13 @@ async def test_a_form_is_checked_as_every_side_checks_it(cloud, vector) -> None:
         headers={"Content-Type": "application/x-www-form-urlencoded"},
     )
     if vector["result"] == "valid":
-        # The form passes, and what is no token or client of the cloud's is refused after.
-        assert response.status_code in {400, 401}, response.text
-        assert response.json()["error"] in {"invalid_client", "invalid_grant"}
+        # The form passes to the service, which refuses what is no token or client of the
+        # cloud's, but revokes whatever the token was (RFC 7009, 2.2).
+        if FORMS[vector["definition"]] == "/app/revoke" and form["client_id"] == CLIENT:
+            assert response.status_code == 200, response.text
+        else:
+            assert response.status_code in {400, 401}, response.text
+            assert response.json()["error"] in {"invalid_client", "invalid_grant"}
         return
     where, _, rule = oauth_error(response, "invalid_request").partition(": ")
     assert vector["keyword"] in rule

@@ -62,7 +62,7 @@ def hello(**changes: Any) -> dict[str, Any]:
     """A robot's hello, as the cloud link's example has it."""
     return {
         "type": "hello",
-        "protocol": "3.5",
+        "protocol": "3.6",
         "device": {"kind": "robot", "model": "concept-v0", "software": "0.4.0"},
         "time": "2026-10-28T03:20:00.250Z",
         "time_zone": "Asia/Ho_Chi_Minh",
