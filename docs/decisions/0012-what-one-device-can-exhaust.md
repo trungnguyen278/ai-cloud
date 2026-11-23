@@ -1,6 +1,6 @@
 # 0012 — What one device can exhaust: frames bounded below the session, connections cut once closed, handshakes counted once their token verifies, and reading bounded by length
 
-- **Status:** Proposed. The owner has not agreed yet; the values are starting points, in `config/base.toml`.
+- **Status:** Accepted, 2026-11-23: the owner left the choice to the assistant. The values are starting points, in `config/base.toml`.
 - **Date:** 2026-11-21, revised 2026-11-22 after the two reviews of ai-cloud#32, and as the cloud link 3.4 bounds the frames; 2026-11-23, as the cloud link 3.6 ends a session over 1002
 
 ## Context
