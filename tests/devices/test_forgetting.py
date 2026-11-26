@@ -18,6 +18,7 @@ import redis.asyncio
 from app_api import Cloud, bearer
 from device import Device
 from events_module import EVENTS, until
+from records import Records
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncEngine
@@ -72,7 +73,7 @@ async def deliver(cloud: Cloud, engine: AsyncEngine) -> None:
     try:
         handlers = {
             type_: handler
-            for consumer in consumers(engine, client)
+            for consumer in consumers(cloud.settings.devices, engine, client)
             for type_, handler in consumer.handlers.items()
         }
         for row in await cloud.sql("SELECT * FROM accounts.outbox ORDER BY seq"):
@@ -288,7 +289,7 @@ async def forgotten_while_registering(
         async with PostgresStore(engine).transaction() as store:
             await registering(store, challenge, home_id, account_id)
             forgetting = asyncio.create_task(
-                forget(Forgetting(PostgresStore(elsewhere), Unheard()))
+                forget(Forgetting(PostgresStore(elsewhere), Unheard(), Records()))
             )
 
             async def stalled() -> bool:
@@ -396,11 +397,12 @@ async def test_a_registration_after_its_home_or_account_went_adds_nothing(
         store=PostgresStore(engine),
         people=Managing(),
         presence=Absent(),
+        sessions=Records(),
         hints=Unheard(),
         challenge_rate=Unlimited(),
     )
     challenge = await service.issue_challenge(account_id, home_id)
-    await forget(Forgetting(PostgresStore(engine), Unheard()), gone, home_id, account_id)
+    await forget(Forgetting(PostgresStore(engine), Unheard(), Records()), gone, home_id, account_id)
     signed = Device().registration(challenge.challenge, challenge.server)
     with pytest.raises(RegistrationInvalid):
         await service.register(
@@ -427,6 +429,7 @@ async def test_a_removal_waits_for_a_registration_in_its_home(cloud, engine) -> 
         store=PostgresStore(elsewhere),
         people=Managing(),
         presence=Absent(),
+        sessions=Records(),
         hints=Unheard(),
         challenge_rate=Unlimited(),
     )
@@ -478,13 +481,14 @@ async def test_a_challenge_issued_as_its_home_or_person_goes_is_not_kept(
     cloud, engine, gone: str
 ) -> None:
     home_id, account_id = uuid.uuid7(), uuid.uuid7()
-    forgetting = Forgetting(PostgresStore(engine), Unheard())
+    forgetting = Forgetting(PostgresStore(engine), Unheard(), Records())
     service = DevicesService(
         settings=cloud.settings.devices,
         app_api=cloud.settings.app_api,
         store=PostgresStore(engine),
         people=Leaving(lambda: forget(forgetting, gone, home_id, account_id)),
         presence=Absent(),
+        sessions=Records(),
         hints=Unheard(),
         challenge_rate=Unlimited(),
     )
@@ -506,6 +510,7 @@ async def test_a_removal_takes_a_device_s_answers_before_the_device(cloud, engin
         store=PostgresStore(elsewhere),
         people=Managing(),
         presence=Absent(),
+        sessions=Records(),
         hints=Unheard(),
         challenge_rate=Unlimited(),
     )
@@ -551,6 +556,7 @@ async def test_a_leave_takes_a_device_s_answers_before_the_device(cloud, engine)
         tokens=None,  # type: ignore[arg-type]  # no handshake here
         store=PostgresStore(elsewhere),
         presence=Absent(),  # type: ignore[arg-type]
+        sessions=None,  # type: ignore[arg-type]  # no session here
         hints=Unheard(),  # type: ignore[arg-type]
         connection_rate=None,  # type: ignore[arg-type]  # no handshake here
     )
@@ -629,10 +635,10 @@ async def test_an_owner_s_home_and_account_are_forgotten_at_once(cloud, engine) 
                         now,
                     )
             ends = await asyncio.gather(
-                Forgetting(PostgresStore(engines[0]), Unheard()).home_deleted(
+                Forgetting(PostgresStore(engines[0]), Unheard(), Records()).home_deleted(
                     event(HomeDeleted, home_id=str(home_id))
                 ),
-                Forgetting(PostgresStore(engines[1]), Unheard()).account_deleted(
+                Forgetting(PostgresStore(engines[1]), Unheard(), Records()).account_deleted(
                     event(AccountDeleted, account_id=str(account_id))
                 ),
                 return_exceptions=True,
@@ -701,7 +707,12 @@ async def test_forgetting_takes_its_rows_in_the_order_of_their_keys(
             # Something holds the answer with the largest key...
             assert await locked_now(holder, answer, key=largest)
             forgetting = asyncio.create_task(
-                forget(Forgetting(PostgresStore(elsewhere), Unheard()), gone, home_id, account_id)
+                forget(
+                    Forgetting(PostgresStore(elsewhere), Unheard(), Records()),
+                    gone,
+                    home_id,
+                    account_id,
+                )
             )
 
             async def stalled() -> bool:
@@ -729,7 +740,7 @@ async def test_a_home_s_forgetting_takes_the_answers_before_the_devices(cloud, e
             assert await locked_now(holder, answer, key=key)
             deleted = event(HomeDeleted, home_id=str(home_id))
             forgetting = asyncio.create_task(
-                Forgetting(PostgresStore(elsewhere), Unheard()).home_deleted(deleted)
+                Forgetting(PostgresStore(elsewhere), Unheard(), Records()).home_deleted(deleted)
             )
 
             async def stalled() -> bool:

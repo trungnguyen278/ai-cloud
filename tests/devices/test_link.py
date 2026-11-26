@@ -21,14 +21,27 @@ import pytest
 import redis.asyncio
 from app_api import Cloud, bearer, conforms
 from device import Device
-from link import DEEP, PATH, WAIT, hello, linked, port, refused, running, served, token, url
+from link import (
+    DEEP,
+    PATH,
+    WAIT,
+    Link,
+    hello,
+    linked,
+    port,
+    refused,
+    running,
+    served,
+    token,
+    url,
+)
 from uvicorn.protocols.http.httptools_impl import HttpToolsProtocol
 from websockets.asyncio.client import ClientConnection, connect
 from websockets.exceptions import ConnectionClosed
 
 from ai_cloud.accounts.api import HomeDeleted
 from ai_cloud.devices.adapters.postgres import PostgresStore, PostgresTransaction
-from ai_cloud.devices.adapters.redis import PRESENCE_PREFIX, RedisPresence
+from ai_cloud.devices.adapters.redis import PRESENCE_PREFIX, SESSION_PREFIX, RedisPresence
 from ai_cloud.devices.api import CONNECTION_RATE_PREFIX, MAX_MESSAGE, consumers
 from ai_cloud.entry import websocket
 from ai_cloud.entry.api import ApiServer, server_config
@@ -147,8 +160,8 @@ async def test_the_hellos_open_a_session(cloud) -> None:
     assert "kind" not in await shown(cloud, tokens, home, device)
     async with served(cloud) as url:
         async with linked(url, await token(cloud, device)) as link:
-            answer = await link.open(protocol="3.7")
-            assert answer["protocol"] == "3.6"  # the lower of the two minors
+            answer = await link.open(protocol="3.8")
+            assert answer["protocol"] == "3.7"  # the lower of the two minors
             assert answer["resumed"] is False
             assert uuid.UUID(answer["session"]).version == 7
             assert answer["ping_interval"] == cloud.settings.devices.link.ping_interval
@@ -257,7 +270,8 @@ async def test_a_first_message_that_is_no_hello_ends_the_session(
 
 
 async def test_a_device_that_says_no_hello_in_time_is_told(make_cloud) -> None:
-    cloud = await make_cloud(devices={"link": {"hello_timeout": 0.2}})
+    # A takeover's wait is shorter than the hello's, as the configuration keeps it.
+    cloud = await make_cloud(devices={"link": {"hello_timeout": 0.2, "takeover_timeout": 0.1}})
     _, _, device = await registered(cloud)
     async with served(cloud) as url, linked(url, await token(cloud, device)) as link:
         assert await link.hear() == {
@@ -303,7 +317,9 @@ async def test_pings_say_what_was_received(cloud) -> None:
         await link.say({"type": "ping", "received": 0})
         assert await link.hear() == {"type": "pong", "received": 0}
         await link.say({"type": "device.changed", "seq": 1, "languages": ["en"]})
-        await link.say({"type": "device.changed", "seq": 2, "time_zone": "Europe/Paris"})
+        await link.say({"type": "device.changed", "seq": 2})
+        # Answered once handled, after the first: a pong counts only what was handled.
+        assert (await link.hear())["reply_to"] == 2
         # Sent again on a new connection, and taken already: ignored (SES-6).
         await link.say({"type": "device.changed", "seq": 2, "languages": ["vi"]})
         await link.say({"type": "device.changed", "seq": 1, "languages": ["vi"]})
@@ -346,8 +362,11 @@ async def test_a_message_the_cloud_cannot_take_gets_an_error(cloud) -> None:
             hello(),
         ):
             await link.say(ignored)
+        # Answered once those before it were handled.
+        await link.say({"type": "device.changed", "seq": 6})
+        assert (await link.hear())["reply_to"] == 6
         await link.say({"type": "ping", "received": 2})
-        assert await link.hear() == {"type": "pong", "received": 5}
+        assert await link.hear() == {"type": "pong", "received": 6}
 
 
 @pytest.mark.parametrize(
@@ -522,7 +541,7 @@ async def test_a_device_that_leaves_its_home_is_removed_then_told(cloud) -> None
     access_token = await token(cloud, device)
     async with served(cloud) as url:
         async with linked(url, access_token) as link:
-            assert (await link.open())["protocol"] == "3.6"
+            assert (await link.open())["protocol"] == "3.7"
             await link.say({"type": "leave", "seq": 1})
             assert await link.hear() == {"type": "bye", "reason": "left"}
             assert await link.ended() == 1000
@@ -541,23 +560,27 @@ async def test_a_deleted_home_s_devices_are_told(cloud) -> None:
     _, home, device = await registered(cloud)
     async with served(cloud) as url, linked(url, await token(cloud, device)) as link:
         await link.open()
-        engine = create_engine(cloud.database, cloud.settings.database, "ai-cloud tests")
-        client = redis.asyncio.Redis.from_url(cloud.redis_url)
-        try:
-            # As the worker hands the accounts' event to the devices' consumer.
-            [handler] = [
-                each.handlers[HomeDeleted.TYPE]
-                for each in consumers(engine, client)
-                if HomeDeleted.TYPE in each.handlers
-            ]
-            data = {"home_id": home["id"]}
-            await handler(
-                Event(uuid.uuid7(), "/accounts", HomeDeleted.TYPE, "s", datetime.now(UTC), data)
-            )
-        finally:
-            await client.aclose()
-            await engine.dispose()
+        await home_deleted(cloud, home)
         assert await link.hear() == {"type": "bye", "reason": "revoked"}
+
+
+async def home_deleted(cloud: Cloud, home: dict[str, Any]) -> None:
+    """Hand the devices' consumer the event of ``home``'s deletion, as the worker would."""
+    engine = create_engine(cloud.database, cloud.settings.database, "ai-cloud tests")
+    client = redis.asyncio.Redis.from_url(cloud.redis_url)
+    try:
+        [handler] = [
+            each.handlers[HomeDeleted.TYPE]
+            for each in consumers(cloud.settings.devices, engine, client)
+            if HomeDeleted.TYPE in each.handlers
+        ]
+        data = {"home_id": home["id"]}
+        await handler(
+            Event(uuid.uuid7(), "/accounts", HomeDeleted.TYPE, "s", datetime.now(UTC), data)
+        )
+    finally:
+        await client.aclose()
+        await engine.dispose()
 
 
 async def test_a_lost_hint_is_found_by_the_next_check(make_cloud) -> None:
@@ -1055,9 +1078,156 @@ async def test_the_devices_own_close_ends_the_session_as_the_clouds_would(
     _, _, device = await registered(cloud)
     async with served(cloud) as at:
         async with linked(at, await token(cloud, device)) as link:
-            await link.open()
+            answer = await link.open()
             await link.ws.close(code)
         await until(lambda: _ended_as(caplog, [ended]))
+        async with linked(at, await token(cloud, device)) as link:
+            await link.say(resuming(answer, 0))
+            assert (await link.hear())["resumed"] is (ended == "closed")
+
+
+# Resuming a session.
+
+
+def resuming(answer: dict[str, Any], received: int, **changes: Any) -> dict[str, Any]:
+    """A hello that resumes the session that the cloud's ``answer`` opened, whose device
+    received up to ``received``."""
+    return hello(resume={"session": answer["session"], "received": received}, **changes)
+
+
+def why_new(caplog: pytest.LogCaptureFixture) -> list[str]:
+    """Why each resume that failed got a new session."""
+    return [
+        each.why  # type: ignore[attr-defined]
+        for each in caplog.records
+        if each.getMessage() == "a device's session could not be resumed: it gets a new one"
+    ]
+
+
+async def heard_to_the_close(link: Link) -> tuple[list[dict[str, Any]], int | None]:
+    """What the cloud said until it closed the connection, and its close code."""
+    heard = []
+    async with asyncio.timeout(WAIT):
+        try:
+            while True:
+                heard.append(json.loads(await link.ws.recv()))
+        except ConnectionClosed as closed:
+            return heard, None if closed.rcvd is None else closed.rcvd.code
+
+
+async def test_a_session_resumes_with_what_its_device_did_not_receive(cloud) -> None:
+    """The cloud sends again what the device did not receive, and says what it handled of the
+    device's (Resuming a session)."""
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at:
+        async with linked(at, await token(cloud, device)) as link:
+            answer = await link.open()
+            await link.say({"type": "device.changed", "seq": 1})
+            error = await link.hear()
+            assert error["reply_to"] == 1
+        # As if the error was lost on the way.
+        async with linked(at, await token(cloud, device)) as link:
+            await link.say(resuming(answer, 0))
+            resumed = await link.hear()
+            assert (resumed["session"], resumed["resumed"], resumed["received"]) == (
+                answer["session"],
+                True,
+                1,
+            )
+            assert await link.hear() == error
+            await link.say({"type": "ping", "received": 1})
+            assert await link.hear() == {"type": "pong", "received": 1}
+
+
+@pytest.mark.parametrize("how", ["removed", "home deleted"])
+async def test_a_removed_device_s_session_goes_with_it(cloud, how: str) -> None:
+    """Removed from its home, or with its home, a device resumes nothing, and the cloud keeps
+    nothing that was sent to it, even while no connection holds its session (ADR-0013)."""
+    tokens, home, device = await registered(cloud)
+    record = f"{SESSION_PREFIX}{device.id}"
+
+    async def parked() -> bool:
+        return await cloud.redis("HGET", record, "owner") == b""
+
+    async with served(cloud) as at:
+        async with linked(at, await token(cloud, device)) as link:
+            await link.open()
+        # Its connection lost, its session waits for it to resume.
+        await until(parked)
+        if how == "removed":
+            removed = await cloud.http.delete(
+                f"/app/v1/homes/{home['id']}/devices/{device.id}", headers=bearer(tokens)
+            )
+            assert removed.status_code == 204
+        else:
+            await home_deleted(cloud, home)
+    assert await cloud.redis("EXISTS", record) == 0
+
+
+@pytest.mark.parametrize("elsewhere", [False, True], ids=["here", "elsewhere"])
+async def test_a_session_resumed_while_its_connection_holds_it_is_taken_over(
+    make_cloud, elsewhere: bool
+) -> None:
+    """The older connection hands the session over, then closes with 4000 and no bye; the
+    newer sends what the device did not receive (Resuming a session, since 3.7)."""
+    first = await make_cloud()
+    second = await make_cloud(keys=first.keys) if elsewhere else first
+    _, _, device = await registered(first)
+    async with contextlib.AsyncExitStack() as stack:
+        here = await stack.enter_async_context(served(first))
+        there = await stack.enter_async_context(served(second)) if elsewhere else here
+        older = await stack.enter_async_context(linked(here, await token(first, device)))
+        answer = await older.open()
+        await older.say({"type": "device.changed", "seq": 1})
+        error = await older.hear()
+        newer = await stack.enter_async_context(linked(there, await token(first, device)))
+        await newer.say(resuming(answer, 0))
+        assert await heard_to_the_close(older) == ([], 4000)
+        resumed = await newer.hear()
+        assert (resumed["session"], resumed["resumed"], resumed["received"]) == (
+            answer["session"],
+            True,
+            1,
+        )
+        assert await newer.hear() == error
+
+
+async def test_only_its_device_resumes_a_session_under_the_registration_it_began_with(
+    cloud, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Another device gets a new session, and so does the device set up again: its removal
+    forgot its session, which the registration it began under keeps from it besides (SEC-6)."""
+    caplog.set_level(logging.INFO)
+    tokens, home, device = await registered(cloud)
+    other = Device()
+    await cloud.add_device(tokens, home, other)
+    path = f"/app/v1/homes/{home['id']}/devices/{device.id}"
+    async with served(cloud) as at:
+        async with linked(at, await token(cloud, device)) as link:
+            answer = await link.open()
+        async with linked(at, await token(cloud, other)) as link:
+            await link.say(resuming(answer, 0))
+            assert (await link.hear())["resumed"] is False
+        assert (await cloud.http.delete(path, headers=bearer(tokens))).status_code == 204
+        await cloud.add_device(tokens, home, device)
+        async with linked(at, await token(cloud, device)) as link:
+            await link.say(resuming(answer, 0))
+            assert (await link.hear())["resumed"] is False
+    assert why_new(caplog) == ["gone", "gone"]
+
+
+async def test_a_session_is_kept_for_resume_window(make_cloud, caplog) -> None:
+    caplog.set_level(logging.INFO)
+    cloud = await make_cloud(devices={"link": {"resume_window": 0.3}})
+    _, _, device = await registered(cloud)
+    async with served(cloud) as at:
+        async with linked(at, await token(cloud, device)) as link:
+            answer = await link.open()
+        await asyncio.sleep(0.5)
+        async with linked(at, await token(cloud, device)) as link:
+            await link.say(resuming(answer, 0))
+            assert (await link.hear())["resumed"] is False
+    assert why_new(caplog) == ["gone"]
 
 
 # A request to upgrade to what uvicorn does not serve, HTTP/2 over plain TCP.

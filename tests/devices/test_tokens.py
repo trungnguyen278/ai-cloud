@@ -17,6 +17,7 @@ import redis.asyncio
 from app_api import Cloud, bearer
 from device import Device
 from forge import hs256, public_pem
+from records import Records
 
 from ai_cloud.accounts.api import HomeDeleted
 from ai_cloud.devices.adapters.postgres import PostgresStore
@@ -114,7 +115,7 @@ async def test_a_deleted_home_s_device_gets_no_token(cloud) -> None:
     try:
         data = {"home_id": home["id"]}
         event = Event(uuid.uuid7(), "/accounts", HomeDeleted.TYPE, "s", datetime.now(UTC), data)
-        await Forgetting(PostgresStore(engine), RedisHints(client)).home_deleted(event)
+        await Forgetting(PostgresStore(engine), RedisHints(client), Records()).home_deleted(event)
     finally:
         await client.aclose()
         await engine.dispose()

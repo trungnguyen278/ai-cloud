@@ -259,7 +259,22 @@ check_interval = 20
 # Seconds a connection's presence lasts unless its replica keeps it, as Centrifugo's
 # presence_ttl: three checks, so that one late or failed check loses nothing.
 presence_ttl = 60
-# Seconds a session waits, as it ends, for its last message and its close to leave: as when
-# the cloud goes away, for each connection's reconnect. A device that reads nothing is then
-# cut within twice [api] ws_close_timeout.
+# Seconds a session's end takes at most, from when it begins: the message it is handling, if
+# it pauses, giving its record up in Redis, its last messages and its close, and leaving its
+# presence in Redis, together;
+# as when the cloud goes away, for each connection's reconnect. A device that reads nothing
+# is then cut within twice [api] ws_close_timeout more (ADR-0012, ADR-0013).
 close_timeout = 5
+# Seconds a session can be resumed after the cloud saw its connection lost: the cloud link's
+# starting point, as Socket.IO's example keeps a socket's state for 2 minutes
+# (maxDisconnectionDuration). AWS IoT keeps a persistent session for an hour by default, for
+# the messages queued to an MQTT client while it is away; what the link keeps is bounded by
+# replay instead.
+resume_window = 120
+# How many sent messages a session keeps until its device says it received them: the cloud
+# link's starting point. A device says so with each ping, every ping_interval.
+replay = 1000
+# Seconds a hello that resumes a session waits for the connection that holds it to stop and
+# hand it over, as EMQX waits 5 s for its own channel to (T_TAKEOVER): within the device's
+# hello_timeout, 5 s, with room for its token's check, the registry and Redis.
+takeover_timeout = 2

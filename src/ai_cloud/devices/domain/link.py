@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""The control channel's session, as the cloud link 3.6 has it, without I/O
+"""The control channel's session, as the cloud link 3.7 has it, without I/O
 (platform/protocols/cloud/README.md: The control channel, Staying connected, Resuming a
 session, Messages, The session, Errors).
 
@@ -9,8 +9,13 @@ that open, keep and end it: a number not above the last one handled is a duplica
 that skips a number ends the session. What a device sends is checked against the
 protocol's schema (SEC-14), and errors name where a message is wrong, never what it holds.
 A frame that has no number for an error to answer ends the session (Messages, Validation).
+
+A session outlives its connection: a hello that names it resumes it, under the terms that
+its first hello set, with what each side sent after the other's ``received`` sent again
+(Resuming a session; docs/decisions/0013-resuming-sessions.md).
 """
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, replace
@@ -25,7 +30,7 @@ from ai_cloud.shared.protocols import Schema, Unreadable, read_json
 # Fixed by the cloud link (platform/protocols/cloud/README.md).
 PROTOCOL = "cloud"  # its schema, platform/protocols/cloud/schema.json
 PATH = "/device/v3/link"  # The cloud's address: the path carries the major version
-MAJOR, MINOR = 3, 6  # the version the cloud speaks
+MAJOR, MINOR = 3, 7  # the version the cloud speaks
 LEAVE_MINOR = 2  # leave: "in a session of 3.2 or later only"
 MAX_MESSAGE = 1 << 20  # Messages, Sizes: "A message holds up to 1 MiB of UTF-8"
 UNNUMBERED = frozenset({"hello", "ping", "pong", "reconnect", "bye"})  # Resuming, Numbers
@@ -99,6 +104,10 @@ class Close(IntEnum):
     INTERNAL = 1011
     # After reconnect: the cloud restarts, and the device connects again at once.
     RESTART = 1012
+    # A newer connection resumed the session: "taken over", the link's first of WebSocket's
+    # private codes (RFC 6455, 7.4.2), with no bye, which would end the session (Resuming a
+    # session, Taken over, since 3.7).
+    TAKEN_OVER = 4000
 
 
 @dataclass(frozen=True)
@@ -139,6 +148,14 @@ class Number(Enum):
 
 
 @dataclass(frozen=True)
+class Resume:
+    """The session that a hello resumes, and the last number its device received in it."""
+
+    session: UUID
+    received: int
+
+
+@dataclass(frozen=True)
 class DeviceHello:
     """What a device's hello says, and what its device.changed changed since."""
 
@@ -153,10 +170,18 @@ class DeviceHello:
     allowed_classes: tuple[str, ...]
     # The conversation it is in, if it is in one.
     conversation: UUID | None
+    # The session it resumes, if it resumes one.
+    resume: Resume | None
+    # The terms that a session's first hello sets, which a hello that resumes it keeps: its
+    # protocol, device, conversations and media, as the SHA-256 of one text that is the same
+    # for the same terms (The session, hello: A resuming hello), so that what a device adds
+    # to them costs its session's record 64 characters, whatever their size. The cloud
+    # reads no events yet.
+    terms: str
 
     @property
     def session_minor(self) -> int:
-        """The minor version of its session: the lower of its own and the cloud's."""
+        """The minor version of a new session: the lower of its own and the cloud's."""
         return min(MINOR, self.minor)
 
     def changed(self, message: dict[str, Any]) -> DeviceHello:
@@ -168,6 +193,65 @@ class DeviceHello:
             if name in message:
                 changes[name] = tuple(message[name])
         return replace(self, **changes)
+
+
+@dataclass(frozen=True)
+class Record:
+    """What the cloud keeps of a session for its device to resume it (Resuming a session):
+    whose it is, under which registration, its terms and its version; then the last number
+    handled from the device, the last one sent, and the text of each message sent that the
+    device has not said it received, in order, up to ``replay`` of them."""
+
+    session: UUID
+    device_id: UUID
+    registered: datetime
+    terms: str
+    minor: int
+    received: int = 0
+    sent: int = 0
+    kept: tuple[str, ...] = ()
+
+
+class Claim(StrEnum):
+    """Why a hello that resumes a session cannot take it now: it waits for the connection that
+    holds it to hand it over, or the device gets a new session."""
+
+    # A connection holds it, and is to hand it over.
+    WAITING = "waiting"
+    # The cloud no longer holds it: ended, lapsed, lost, or not the device's newest.
+    GONE = "gone"
+    # It is the device's under a registration that was removed since (SEC-6).
+    REGISTRATION = "registration"
+    # The hello changed the session's terms.
+    TERMS = "terms"
+    # The cloud no longer speaks the session's version.
+    VERSION = "version"
+    # A newer connection of the device claimed it since, or took it: it goes on there.
+    SUPERSEDED = "superseded"
+
+
+class Keeping(Enum):
+    """What a check finds of the session that a connection holds."""
+
+    # Still the connection's.
+    HELD = "held"
+    # A newer connection resumes it: the older one is taken over.
+    TAKEN = "taken"
+    # A newer connection has a new session: the older one's is replaced.
+    REPLACED = "replaced"
+    # Lost, as Redis may lose it (ADR-0008): the session goes on, and its next loss ends it.
+    MISSING = "missing"
+
+
+class Handing(Enum):
+    """What became of a session that its connection gave up, without a bye."""
+
+    # Handed to the newer connection that resumes it.
+    HANDED = "handed"
+    # Kept for resume_window.
+    PARKED = "parked"
+    # No longer the connection's to give: replaced, or lost.
+    LOST = "lost"
 
 
 def encode(message: dict[str, Any]) -> str:
@@ -238,6 +322,7 @@ def read_hello(first: Message, schema: Schema) -> DeviceHello | Bye | Unanswerab
         return Unanswerable(f"hello: {problem}")
     device = message["device"]
     conversation = message.get("conversation")
+    resume = message.get("resume")
     return DeviceHello(
         # The schema allows major.minor only.
         minor=int(message["protocol"].partition(".")[2]),
@@ -246,19 +331,36 @@ def read_hello(first: Message, schema: Schema) -> DeviceHello | Bye | Unanswerab
         languages=tuple(message["languages"]),
         allowed_classes=tuple(message["allowed_classes"]),
         conversation=None if conversation is None else UUID(conversation),
+        resume=None
+        if resume is None
+        # $defs/count is an integer, which JSON Schema also reads in a number such as 1.0.
+        else Resume(UUID(resume["session"]), int(resume["received"])),
+        terms=hashlib.sha256(
+            json.dumps(
+                {name: message[name] for name in ("protocol", "device", "conversations", "media")},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest(),
     )
 
 
 def cloud_hello(
-    session: UUID, hello: DeviceHello, now: datetime, ping_interval: float
+    session: UUID, minor: int, now: datetime, ping_interval: float, received: int | None = None
 ) -> dict[str, Any]:
-    """The cloud's answer to ``hello``, opening the new session ``session``. The cloud holds
-    no conversations yet, and subscribes to no event."""
-    return {
+    """The cloud's hello in the session ``session`` of version ``minor``: a new one, or one
+    resumed after the device's message ``received``. The cloud holds no conversations yet,
+    and subscribes to no event, in any session: a resumed one keeps them as they were."""
+    said: dict[str, Any] = {
         "type": "hello",
-        "protocol": f"{MAJOR}.{hello.session_minor}",
+        "protocol": f"{MAJOR}.{minor}",
         "session": str(session),
-        "resumed": False,
+        "resumed": received is not None,
+    }
+    if received is not None:
+        said["received"] = received
+    return {
+        **said,
         "time": instant(now),
         "ping_interval": ping_interval,
         "conversations": False,

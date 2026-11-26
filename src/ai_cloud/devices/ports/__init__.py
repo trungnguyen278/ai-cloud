@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: MIT
 """What the devices need from outside: their store, the assertions they have seen, what the
 accounts know of people, and, for the control channel, its connections, the presence of the
-devices whose channel is open, and the hints that reach the replica that holds one."""
+devices whose channel is open, the sessions that they may resume, and the hints that reach
+the replica that holds one."""
 
 from collections.abc import AsyncIterator, Collection, Sequence
 from contextlib import AbstractAsyncContextManager
@@ -9,7 +10,7 @@ from datetime import datetime
 from typing import Protocol
 from uuid import UUID
 
-from ai_cloud.devices.domain.link import Closed
+from ai_cloud.devices.domain.link import Claim, Closed, Handing, Keeping, Record
 from ai_cloud.devices.domain.model import (
     Access,
     Answer,
@@ -225,6 +226,72 @@ class Presence(Protocol):
 
     async def connected(self, device_ids: Collection[UUID]) -> set[UUID]:
         """Those of these devices that have a connection open."""
+        ...
+
+
+class Sessions(Protocol):
+    """The session of each device, as every replica sees it, for its device to resume it on
+    any of them (the cloud link, Resuming a session): one at a time, written only by the
+    connection that holds it, which keeps it while it lasts and gives it up as it ends. A
+    session that a connection holds lapses unless the replica that holds it keeps it; one
+    given up lasts ``resume_window``."""
+
+    async def start(self, record: Record, connection: UUID) -> None:
+        """Hold ``record``, a new session, for ``connection``, in place of any other of the
+        device's."""
+        ...
+
+    async def claim(
+        self,
+        device_id: UUID,
+        connection: UUID,
+        session: UUID,
+        registered: datetime,
+        terms: str,
+        minor: int,
+    ) -> Record | Claim:
+        """Take the device's session ``session`` for ``connection``, if it is the device's
+        under the registration ``registered``, with the terms ``terms`` and a version not
+        above ``minor``: what was kept of it, once given up. One that a connection still
+        holds is asked of it, and waits (``WAITING``) until it is handed over; why not
+        otherwise. A newer claim takes the place of an older one."""
+        ...
+
+    async def take(
+        self,
+        device_id: UUID,
+        connection: UUID,
+        session: UUID,
+        registered: datetime,
+        terms: str,
+        *,
+        last: bool,
+    ) -> Record | Claim:
+        """What was kept of the session that ``connection`` claimed, with the registration and
+        the terms that its claim compared, once handed over to it; ``WAITING`` until then,
+        ``SUPERSEDED`` once a newer connection claimed it or took it, and ``GONE`` once the
+        cloud no longer holds it. The ``last`` try
+        withdraws the claim, if the session was not handed over: the connection that holds it
+        then gives it up for ``resume_window`` as it ends."""
+        ...
+
+    async def keep(self, held: Sequence[tuple[UUID, UUID, UUID]]) -> dict[UUID, Keeping]:
+        """Keep the sessions that these connections hold, each ``(device, connection,
+        session)``; what became of each, by connection."""
+        ...
+
+    async def hand(self, record: Record, connection: UUID) -> Handing:
+        """Give up the session that ``connection`` holds, as ``record`` has it now: to the
+        connection that claimed it, if one did, or for ``resume_window``."""
+        ...
+
+    async def end(self, device_id: UUID, connection: UUID, session: UUID) -> None:
+        """Forget the session, if ``connection`` still holds it: nothing resumes it."""
+        ...
+
+    async def forget(self, device_ids: Collection[UUID]) -> None:
+        """Forget the sessions of ``device_ids``, whoever holds them: a device removed from
+        its home resumes none, and the cloud keeps nothing that was sent to it."""
         ...
 
 

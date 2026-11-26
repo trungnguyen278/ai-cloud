@@ -16,7 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from ai_cloud.accounts.api import AccountDeleted, Accounts, HomeDeleted, MemberRemoved
 from ai_cloud.devices.adapters.accounts import AccountsPeople
 from ai_cloud.devices.adapters.postgres import PostgresStore
-from ai_cloud.devices.adapters.redis import RedisAssertions, RedisHints, RedisPresence
+from ai_cloud.devices.adapters.redis import (
+    RedisAssertions,
+    RedisHints,
+    RedisPresence,
+    RedisSessions,
+)
 from ai_cloud.devices.db.tables import MIGRATIONS
 from ai_cloud.devices.domain.link import MAX_MESSAGE
 from ai_cloud.devices.routes import router
@@ -50,6 +55,7 @@ class Devices:
     ) -> None:
         store = PostgresStore(engine)
         presence = RedisPresence(redis, settings.link.presence_ttl)
+        sessions = sessions_in(redis, settings)
         hints = RedisHints(redis)
         service = DevicesService(
             settings=settings,
@@ -57,6 +63,7 @@ class Devices:
             store=store,
             people=AccountsPeople(accounts),
             presence=presence,
+            sessions=sessions,
             hints=hints,
             challenge_rate=RedisRateLimiter(redis, CHALLENGE_RATE_PREFIX, settings.challenge_rate),
         )
@@ -74,6 +81,7 @@ class Devices:
             tokens=device_tokens,
             store=store,
             presence=presence,
+            sessions=sessions,
             hints=hints,
             connection_rate=RedisRateLimiter(
                 redis, CONNECTION_RATE_PREFIX, settings.connection_rate
@@ -90,11 +98,16 @@ class Devices:
         await self._links.going_away()
 
 
-def consumers(engine: AsyncEngine, redis: Redis) -> list[Consumer]:
+def sessions_in(redis: Redis, settings: DevicesSettings) -> RedisSessions:
+    """The devices' sessions, in ``redis``."""
+    return RedisSessions(redis, settings.link.presence_ttl, settings.link.resume_window)
+
+
+def consumers(settings: DevicesSettings, engine: AsyncEngine, redis: Redis) -> list[Consumer]:
     """What the devices do with the other modules' events, in the worker: a deleted home's
     devices are revoked, and what a person asked for goes with their place in a home, or with
     their account."""
-    forgetting = Forgetting(PostgresStore(engine), RedisHints(redis))
+    forgetting = Forgetting(PostgresStore(engine), RedisHints(redis), sessions_in(redis, settings))
     return [
         Consumer("devices.home_deletions", {HomeDeleted.TYPE: forgetting.home_deleted}),
         Consumer("devices.member_removals", {MemberRemoved.TYPE: forgetting.member_removed}),

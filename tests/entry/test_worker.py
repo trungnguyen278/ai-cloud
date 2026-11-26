@@ -62,7 +62,7 @@ async def test_the_worker_relays_and_consumes_until_it_is_stopped(
             settings,
             WorkerSecrets(database, redis_url),
             stop,
-            consumers=lambda _engine, _redis: [consumer],
+            consumers=lambda _settings, _engine, _redis: [consumer],
         )
     )
     home_id = uuid.uuid7()
