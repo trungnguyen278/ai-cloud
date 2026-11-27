@@ -1,6 +1,6 @@
 # Architecture
 
-> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys and their names, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads, and removes a device that leaves its home before its factory reset (the app API 1.9, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.6, and [ADR-0011](decisions/0011-control-channels.md)); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
+> **Status:** accepted in [ADR-0001](decisions/0001-architecture.md) (the shape) and [ADR-0002](decisions/0002-stack.md) (the stack). Built so far: the `api` process; the `accounts` module, which serves the app API's sign-in and homes, but for Apple and the page that an invitation's link opens; the `devices` module, which registers a home's devices at set-up, keeps their keys and their names, gives them their access tokens, and holds their sessions on the control channel, with the presence that every replica reads, resumes a session on whichever replica its device reaches again, and removes a device that leaves its home before its factory reset (the app API 1.9, [ADR-0010](decisions/0010-device-registrations.md), the cloud link 3.7, [ADR-0011](decisions/0011-control-channels.md) and [ADR-0013](decisions/0013-resuming-sessions.md), proposed); and the `worker` process, which relays the modules' domain events and hands them to their consumers ([ADR-0009](decisions/0009-domain-events.md)).
 
 The cloud is the AI of every device in the project, and runs what a fleet of devices needs: their identity, their owners, set-up, updates, operations. The robot is the first device; more kinds will come, and more owners, devices and languages. The cloud must grow with them without being rebuilt, while one person runs it on little money. Its first owner is its maker ([Phases](#phases)).
 
@@ -26,7 +26,7 @@ The cloud is the AI of every device in the project, and runs what a fleet of dev
                  └──────────────────────────────────────────────────────────────────────────┘
 ```
 
-Devices keep a control channel to `api` at all times, a WebSocket, and join a LiveKit room only to talk, one for each conversation (the cloud link 3.6, [ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)):
+Devices keep a control channel to `api` at all times, a WebSocket, and join a LiveKit room only to talk, one for each conversation (the cloud link 3.7, [ai-platform ADR-0006](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0006-two-channels.md)):
 - every call to a device goes through `devices`, on its control channel, whoever makes it: the agent, a reminder, the app;
 - a conversation's turns and answers go between the agent and the device, in the room, with the audio.
 
@@ -120,7 +120,7 @@ The shape is decided here; the providers are chosen in ADR-0003.
   - A module's migrations are a branch of the one Alembic environment, beside its tables, with its version table in its schema ([ADR-0008](decisions/0008-data-and-tokens.md)).
 - **Each module's data is its own.** Other modules refer to it by identifier only: no foreign keys or joins across schemas, and reads go through the owner's `api.py`. A module's tables can then move to a database of their own.
 - **Everything that grows with use carries `home_id`** ([ai-platform ADR-0005](https://github.com/trungnguyen278/ai-platform/blob/main/docs/decisions/0005-homes.md)), so that the data can be partitioned or sharded by home. High-volume tables (usage, health reports, turns) are partitioned by time, and their old partitions dropped as their retention says.
-- **Redis** holds only what can be lost: caches, rate limits, presence, the event queue (Redis Streams). Losing it loses nothing that matters: each outbox keeps its events for their retention, and the relay writes again what a stream lost.
+- **Redis** holds only what can be lost: caches, rate limits, presence, the sessions that devices may resume, the event queue (Redis Streams). Losing it loses nothing that matters: each outbox keeps its events for their retention, and the relay writes again what a stream lost.
 - **Object storage**, S3-compatible, holds backups and exports. Audio is not kept unless an owner asks.
 - **Retention:** each table says how long it keeps its rows, and an owner's data can be deleted (PRIV-4).
 
@@ -242,3 +242,4 @@ Luni Cloud was the preview. What it taught, and what changes:
 | [0010](decisions/0010-device-registrations.md) | Registering devices: challenges in PostgreSQL, used in the registration's transaction |
 | [0011](decisions/0011-control-channels.md) | The devices' control channels: sessions in the replica that holds them, presence and hints in Redis |
 | [0012](decisions/0012-what-one-device-can-exhaust.md) | What one device can exhaust: its frames, connections, handshakes and reading, bounded |
+| [0013](decisions/0013-resuming-sessions.md) | Resuming a session: one record a device in Redis, written only by the connection that holds it |

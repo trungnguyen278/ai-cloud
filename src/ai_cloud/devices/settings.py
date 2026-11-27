@@ -50,15 +50,35 @@ class LinkSettings(Settings):
     # Seconds a connection's presence lasts unless the replica that holds it keeps it: longer
     # than check_interval.
     presence_ttl: Annotated[float, Field(gt=0)]
-    # Seconds a session waits, as it ends, for its last messages and its close to leave: as
-    # when the cloud goes away.
+    # Seconds a session's end takes at most, from when it begins: the message it is handling,
+    # if it pauses, giving its record up, its last messages and its close, and leaving its
+    # presence, together. One that must stop the message it is handling is not resumed.
     close_timeout: Annotated[float, Field(gt=0)]
+    # Seconds a session can be resumed after its connection was lost (resume_window), counted
+    # from when the cloud saw the loss. One that its connection holds lasts presence_ttl
+    # unless its replica keeps it.
+    resume_window: Annotated[float, Field(gt=0)]
+    # How many sent messages a session keeps until its device says it received them, to send
+    # again on a resumed one (replay); past them, the oldest go, and a device that had not
+    # received them gets a new session.
+    replay: Annotated[int, Field(ge=1)]
+    # Seconds a hello that resumes a session waits for the connection that holds it to hand it
+    # over, past which the device gets a new session: shorter than hello_timeout, which the
+    # device waits for the cloud's hello.
+    takeover_timeout: Annotated[float, Field(gt=0)]
 
     @model_validator(mode="after")
     def _presence_outlasts_a_check(self) -> Self:
         if self.presence_ttl <= self.check_interval:
             # Otherwise presence would lapse between two checks of a connection still open.
             raise ValueError("presence_ttl must be longer than check_interval")
+        return self
+
+    @model_validator(mode="after")
+    def _takeover_fits_in_a_hello(self) -> Self:
+        if self.takeover_timeout >= self.hello_timeout:
+            # Otherwise the device would give up on the cloud's hello first.
+            raise ValueError("takeover_timeout must be shorter than hello_timeout")
         return self
 
 

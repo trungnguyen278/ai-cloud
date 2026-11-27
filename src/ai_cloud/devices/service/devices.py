@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """The devices' use cases: challenges, registrations, a home's devices and their names, the
 devices' access tokens, and what goes when a home or an account does (ai-platform ADR-0012 and
-ADR-0013, its app API 1.9, and the cloud link 3.6). A device removed, or gone with its home,
+ADR-0013, its app API 1.9, and the cloud link 3.7). A device removed, or gone with its home,
 is hinted at, so that its control channel ends (docs/decisions/0011-control-channels.md); one
 that leaves its home is removed as here by its own control channel (links.py).
 
@@ -57,7 +57,15 @@ from ai_cloud.devices.domain.model import (
     new_challenge,
     renamed,
 )
-from ai_cloud.devices.ports import Assertions, Hints, People, Presence, Store, Transaction
+from ai_cloud.devices.ports import (
+    Assertions,
+    Hints,
+    People,
+    Presence,
+    Sessions,
+    Store,
+    Transaction,
+)
 from ai_cloud.devices.settings import DevicesSettings
 from ai_cloud.shared.app_api import AppApiSettings, IdempotencyKey, Page, page_of
 from ai_cloud.shared.etags import Broken, Condition
@@ -96,6 +104,19 @@ async def hint(hints: Hints, device_ids: Collection[UUID]) -> None:
         )
 
 
+async def forget_sessions(sessions: Sessions, device_ids: Collection[UUID]) -> None:
+    """Forget the sessions of these devices, removed from their homes. Those that cannot be
+    forgotten lapse, and no device resumes them meanwhile: one resumes a session only under
+    the registration that it began under (the cloud link, SEC-6)."""
+    try:
+        await sessions.forget(device_ids)
+    except Exception:
+        log.warning(
+            "the sessions of removed devices could not be forgotten: they lapse",
+            exc_info=True,
+        )
+
+
 class DevicesService:
     def __init__(
         self,
@@ -105,6 +126,7 @@ class DevicesService:
         store: Store,
         people: People,
         presence: Presence,
+        sessions: Sessions,
         hints: Hints,
         challenge_rate: RateLimiter,
     ) -> None:
@@ -112,6 +134,7 @@ class DevicesService:
         self._store = store
         self._people = people
         self._presence = presence
+        self._sessions = sessions
         self._hints = hints
         self._challenge_rate = challenge_rate
         self._challenge_lifetime = timedelta(seconds=settings.challenge_lifetime)
@@ -250,7 +273,8 @@ class DevicesService:
             if not await store.remove_device(home_id, device_id):
                 raise NotFound("no such device in the home")
         log.info("device removed", extra={"home": str(home_id), "device": str(device_id)})
-        # Its control channel ends with bye revoked.
+        # Its session goes, and its control channel ends with bye revoked.
+        await forget_sessions(self._sessions, [device_id])
         await hint(self._hints, [device_id])
 
     # Helpers.
@@ -416,13 +440,14 @@ class Forgetting:
     an account is gone (docs/decisions/0009-domain-events.md). Each handler is idempotent:
     forgetting what is gone does nothing."""
 
-    def __init__(self, store: Store, hints: Hints) -> None:
+    def __init__(self, store: Store, hints: Hints, sessions: Sessions) -> None:
         self._store = store
         self._hints = hints
+        self._sessions = sessions
 
     async def home_deleted(self, event: Event) -> None:
-        """A deleted home's devices are revoked, and its challenges and first answers go.
-        Their control channels end with bye revoked."""
+        """A deleted home's devices are revoked, and its challenges, first answers and the
+        devices' sessions go. Their control channels end with bye revoked."""
         home_id = HomeDeleted.from_data(event.data).home_id
         async with self._store.transaction() as store:
             revoked = await store.forget_home(home_id)
@@ -431,6 +456,7 @@ class Forgetting:
                 "a deleted home's devices are revoked",
                 extra={"home": str(home_id), "devices": len(revoked)},
             )
+            await forget_sessions(self._sessions, revoked)
             await hint(self._hints, revoked)
 
     async def member_removed(self, event: Event) -> None:
